@@ -1,0 +1,2191 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Avancement — Dispersion 1B</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  URL GOOGLE APPS SCRIPT CONFIGURÉE                          ║
+// ╚══════════════════════════════════════════════════════════════╝
+const API_URL = 'https://script.google.com/macros/s/AKfycbww9tyRkGhOqP3cvmomr6wM_TEqy0YoX2wGqrIL_cFZ8g-rv0hF98gsJZN1g00z0gdU/exec';
+
+const LOC=[
+  {id:'oume',nm:'Oumé',z:'Ouest',tot:24482,regards:5,zones:[
+    {zid:'Z1',nm:'Zone 1',dn:{160:1890,110:1120,90:1340,63:5378},tot:9728},
+    {zid:'Z3',nm:'Zone 3',dn:{160:615,90:805,63:2790},tot:4210},
+    {zid:'Z4',nm:'Zone 4',dn:{110:734,90:866,63:3225},tot:4825},
+    {zid:'Z5',nm:'Zone 5',dn:{110:1037,90:910,63:3772},tot:5719},
+  ]},
+  {id:'hire',nm:'Hiré',z:'Ouest',tot:12791,regards:0,zones:[
+    {zid:'Z1',nm:'Zone 1',dn:{90:269,63:1124},tot:1393},
+    {zid:'Z2',nm:'Zone 2',dn:{110:295,90:305,63:1938},tot:2538},
+    {zid:'Z3',nm:'Zone 3',dn:{110:775,90:1105,63:2305},tot:4185},
+    {zid:'Z4',nm:'Zone 4',dn:{90:625,63:2220},tot:2845},
+    {zid:'Z5',nm:'Zone 5',dn:{110:155,90:275,63:1400},tot:1830},
+  ]},
+  {id:'diegonefla',nm:'Diégonéfla',z:'Ouest',tot:10269,regards:2,zones:[{zid:'_',nm:'',dn:{110:643,90:1468,63:8158},tot:10269}]},
+  {id:'goueda',nm:'Gouéda',z:'Ouest',tot:4370,regards:2,zones:[{zid:'_',nm:'',dn:{110:707,90:925,63:2738},tot:4370}]},
+  {id:'doukouya',nm:'Doukouya',z:'Ouest',tot:935,regards:0,zones:[{zid:'_',nm:'',dn:{63:935},tot:935}]},
+  {id:'toumodi',nm:'Toumodi',z:'Est',tot:18946,regards:2,zones:[{zid:'_',nm:'',dn:{110:1675,90:3935,63:13336},tot:18946}]},
+  {id:'kokoumbo',nm:'Kokoumbo',z:'Est',tot:6993,regards:2,zones:[{zid:'_',nm:'',dn:{160:985,90:450,63:5558},tot:6993}]},
+  {id:'zahakro',nm:'Zahakro',z:'Est',tot:6362,regards:1,zones:[{zid:'_',nm:'',dn:{90:552,63:5810},tot:6362}]},
+  {id:'angoda',nm:'Angoda',z:'Est',tot:6956,regards:0,zones:[{zid:'_',nm:'',dn:{63:6956},tot:6956}]},
+  {id:'gbonti',nm:'Gbonti',z:'Est',tot:1221,regards:0,zones:[{zid:'_',nm:'',dn:{63:1221},tot:1221}]},
+];
+const ZN=['Ouest','Est'];
+const DN_CLR={160:'#6366f1',110:'#2c7be5',90:'#f5a623',63:'#36b37e'};
+
+// ── PARAMÈTRES PILOTAGE ──
+const SEUIL_RETARD_CRITIQUE=15; // % d'écart Réel/Objectif au-delà duquel on flag
+const FENETRE_CADENCE_J=7;      // Fenêtre de calcul cadence pour projection fin
+const DATE_FIN_OBJECTIF='2026-07-15'; // Date fin planning recalée (avec marge réception)
+
+// ── PONDÉRATION DES ACTIVITÉS ──
+// Coefficients alignés sur le fichier Avancement_travaux_Dispersion_1B.xlsx
+// Pour les lots sans regards (Hiré, Doukouya, Angoda, Gbonti), le coef "gc" est exclu
+const ACTIV={
+  imp:{nm:'Implantation',coef:1,base:'lot'},       // Oui/non par lot, base = linéaire total
+  bar:{nm:'Bardage',coef:1,base:'dn'},              // ml par DN
+  soud:{nm:'Soudure',coef:2,base:'dn'},             // ml par DN (actuel)
+  fou:{nm:'Ouv. tranchée',coef:2,base:'dn'},        // ml par DN (actuel)
+  rem:{nm:'Remblai',coef:2,base:'dn'},              // ml par DN (actuel)
+  ess:{nm:'Essai pression',coef:0.5,base:'dn'},     // ml par DN
+  gc:{nm:'Travaux GC',coef:0.5,base:'regards'},     // Nb regards/total - exclu si lot sans regards
+  rec:{nm:'Plan récolement',coef:0.5,base:'lot'}   // Oui/non par lot
+};
+
+// Coefficient total d'un lot selon présence de regards
+function coefLot(lot){
+  let s=0;Object.keys(ACTIV).forEach(k=>{if(k==='gc'&&lot.regards===0)return;s+=ACTIV[k].coef;});
+  return s;
+}
+
+// ── PLANNING OPÉRATIONNEL V05 (toutes activités, dates réelles planning) ──
+// Structure: {lot, zone (optionnel), act, ml|nb, d0, d1}
+// act ∈ {imp, bar, soud, fou, rem, ess, gc, rec}
+// Pour GC: nb = nombre de regards
+// Pour les poses (soud/fou/rem), les tâches originales sont dérivées de la pose de canalisation :
+// on considère que la pose implique simultanément soudure, fouille et remblai au même rythme
+const PLAN_TASKS=[
+  // ═══════════════════ OUMÉ (Lot 1) ═══════════════════
+  // Zone 1
+  {lot:'oume',zone:'Z1',act:'imp',ml:9728,d0:'2026-01-12',d1:'2026-01-17'},
+  {lot:'oume',zone:'Z1',act:'bar',ml:9728,d0:'2026-01-19',d1:'2026-01-27'},
+  {lot:'oume',zone:'Z1',act:'pose',ml:1890,d0:'2026-01-27',d1:'2026-02-10'}, // DN160
+  {lot:'oume',zone:'Z1',act:'pose',ml:1120,d0:'2026-02-10',d1:'2026-02-16'}, // DN110
+  {lot:'oume',zone:'Z1',act:'pose',ml:1340,d0:'2026-02-16',d1:'2026-02-23'}, // DN90
+  {lot:'oume',zone:'Z1',act:'pose',ml:5378,d0:'2026-02-23',d1:'2026-03-24'}, // DN63
+  {lot:'oume',zone:'Z1',act:'ess',ml:9728,d0:'2026-03-24',d1:'2026-04-21'},
+  // Zone 4
+  {lot:'oume',zone:'Z4',act:'imp',ml:4825,d0:'2026-01-17',d1:'2026-01-22'},
+  {lot:'oume',zone:'Z4',act:'bar',ml:4825,d0:'2026-01-23',d1:'2026-01-28'},
+  {lot:'oume',zone:'Z4',act:'pose',ml:734,d0:'2026-01-28',d1:'2026-02-03'},
+  {lot:'oume',zone:'Z4',act:'pose',ml:866,d0:'2026-01-28',d1:'2026-02-03'},
+  {lot:'oume',zone:'Z4',act:'pose',ml:3225,d0:'2026-02-03',d1:'2026-02-19'},
+  {lot:'oume',zone:'Z4',act:'ess',ml:4825,d0:'2026-02-19',d1:'2026-03-04'},
+  // Zone 5
+  {lot:'oume',zone:'Z5',act:'imp',ml:5719,d0:'2026-03-04',d1:'2026-03-07'},
+  {lot:'oume',zone:'Z5',act:'bar',ml:5719,d0:'2026-03-10',d1:'2026-03-14'},
+  {lot:'oume',zone:'Z5',act:'pose',ml:1037,d0:'2026-03-14',d1:'2026-03-24'},
+  {lot:'oume',zone:'Z5',act:'pose',ml:910,d0:'2026-03-14',d1:'2026-03-24'},
+  {lot:'oume',zone:'Z5',act:'pose',ml:3772,d0:'2026-03-24',d1:'2026-04-14'},
+  {lot:'oume',zone:'Z5',act:'ess',ml:5719,d0:'2026-04-14',d1:'2026-04-30'},
+  // Zone 3
+  {lot:'oume',zone:'Z3',act:'imp',ml:4210,d0:'2026-04-21',d1:'2026-04-24'},
+  {lot:'oume',zone:'Z3',act:'bar',ml:4210,d0:'2026-04-25',d1:'2026-05-02'},
+  {lot:'oume',zone:'Z3',act:'pose',ml:615,d0:'2026-05-02',d1:'2026-05-09'},
+  {lot:'oume',zone:'Z3',act:'pose',ml:805,d0:'2026-05-09',d1:'2026-05-15'},
+  {lot:'oume',zone:'Z3',act:'pose',ml:2790,d0:'2026-05-15',d1:'2026-06-03'},
+  {lot:'oume',zone:'Z3',act:'ess',ml:4210,d0:'2026-06-03',d1:'2026-06-12'},
+  // Regards Oumé (5)
+  {lot:'oume',act:'gc',nb:5,d0:'2026-04-30',d1:'2026-05-15'},
+  
+  // ═══════════════════ DOUKOUYA (Lot 5) ═══════════════════
+  {lot:'doukouya',act:'imp',ml:935,d0:'2026-01-22',d1:'2026-01-24'},
+  {lot:'doukouya',act:'bar',ml:935,d0:'2026-01-26',d1:'2026-01-28'},
+  {lot:'doukouya',act:'pose',ml:935,d0:'2026-01-28',d1:'2026-02-04'},
+  {lot:'doukouya',act:'ess',ml:935,d0:'2026-02-04',d1:'2026-02-11'},
+  
+  // ═══════════════════ DIÉGONÉFLA (Lot 2) ═══════════════════
+  {lot:'diegonefla',act:'imp',ml:10269,d0:'2026-02-11',d1:'2026-02-17'},
+  {lot:'diegonefla',act:'bar',ml:10269,d0:'2026-02-19',d1:'2026-02-28'},
+  {lot:'diegonefla',act:'pose',ml:643,d0:'2026-02-28',d1:'2026-03-05'},
+  {lot:'diegonefla',act:'pose',ml:1468,d0:'2026-03-05',d1:'2026-03-13'},
+  {lot:'diegonefla',act:'pose',ml:8158,d0:'2026-03-13',d1:'2026-04-25'},
+  {lot:'diegonefla',act:'ess',ml:10269,d0:'2026-04-25',d1:'2026-05-16'},
+  {lot:'diegonefla',act:'gc',nb:2,d0:'2026-05-16',d1:'2026-06-16'},
+  
+  // ═══════════════════ GOUÉDA (Lot 4) ═══════════════════
+  {lot:'goueda',act:'imp',ml:4370,d0:'2026-04-30',d1:'2026-05-05'},
+  {lot:'goueda',act:'bar',ml:4370,d0:'2026-05-06',d1:'2026-05-11'},
+  {lot:'goueda',act:'pose',ml:707,d0:'2026-05-11',d1:'2026-05-18'},
+  {lot:'goueda',act:'pose',ml:925,d0:'2026-05-19',d1:'2026-05-26'},
+  {lot:'goueda',act:'pose',ml:2738,d0:'2026-05-26',d1:'2026-06-10'},
+  {lot:'goueda',act:'ess',ml:4370,d0:'2026-06-10',d1:'2026-06-23'},
+  {lot:'goueda',act:'gc',nb:2,d0:'2026-06-23',d1:'2026-07-03'},
+  
+  // ═══════════════════ HIRÉ (Lot 3) - pas de regards ═══════════════════
+  // Zone 3
+  {lot:'hire',zone:'Z3',act:'imp',ml:4185,d0:'2026-01-26',d1:'2026-01-29'},
+  {lot:'hire',zone:'Z3',act:'bar',ml:4185,d0:'2026-01-31',d1:'2026-02-05'},
+  {lot:'hire',zone:'Z3',act:'pose',ml:775,d0:'2026-02-05',d1:'2026-02-11'},
+  {lot:'hire',zone:'Z3',act:'pose',ml:1105,d0:'2026-02-11',d1:'2026-02-17'},
+  {lot:'hire',zone:'Z3',act:'pose',ml:2305,d0:'2026-02-11',d1:'2026-02-24'},
+  {lot:'hire',zone:'Z3',act:'ess',ml:4185,d0:'2026-02-24',d1:'2026-03-07'},
+  // Zone 2
+  {lot:'hire',zone:'Z2',act:'imp',ml:2538,d0:'2026-03-09',d1:'2026-03-12'},
+  {lot:'hire',zone:'Z2',act:'bar',ml:2538,d0:'2026-03-13',d1:'2026-03-18'},
+  {lot:'hire',zone:'Z2',act:'pose',ml:295,d0:'2026-03-19',d1:'2026-03-23'},
+  {lot:'hire',zone:'Z2',act:'pose',ml:305,d0:'2026-03-19',d1:'2026-03-23'},
+  {lot:'hire',zone:'Z2',act:'pose',ml:1938,d0:'2026-03-23',d1:'2026-04-02'},
+  {lot:'hire',zone:'Z2',act:'ess',ml:2538,d0:'2026-04-02',d1:'2026-04-13'},
+  // Zone 1
+  {lot:'hire',zone:'Z1',act:'imp',ml:1393,d0:'2026-04-13',d1:'2026-04-15'},
+  {lot:'hire',zone:'Z1',act:'bar',ml:1393,d0:'2026-04-16',d1:'2026-04-20'},
+  {lot:'hire',zone:'Z1',act:'pose',ml:269,d0:'2026-04-20',d1:'2026-04-22'},
+  {lot:'hire',zone:'Z1',act:'pose',ml:1124,d0:'2026-04-20',d1:'2026-04-25'},
+  {lot:'hire',zone:'Z1',act:'ess',ml:1393,d0:'2026-04-25',d1:'2026-05-04'},
+  // Zone 5
+  {lot:'hire',zone:'Z5',act:'imp',ml:1830,d0:'2026-05-05',d1:'2026-05-07'},
+  {lot:'hire',zone:'Z5',act:'bar',ml:1830,d0:'2026-05-09',d1:'2026-05-12'},
+  {lot:'hire',zone:'Z5',act:'pose',ml:155,d0:'2026-05-12',d1:'2026-05-15'},
+  {lot:'hire',zone:'Z5',act:'pose',ml:275,d0:'2026-05-15',d1:'2026-05-18'},
+  {lot:'hire',zone:'Z5',act:'pose',ml:1400,d0:'2026-05-15',d1:'2026-05-22'},
+  {lot:'hire',zone:'Z5',act:'ess',ml:1830,d0:'2026-05-22',d1:'2026-06-01'},
+  // Zone 4
+  {lot:'hire',zone:'Z4',act:'imp',ml:2845,d0:'2026-06-01',d1:'2026-06-03'},
+  {lot:'hire',zone:'Z4',act:'bar',ml:2845,d0:'2026-06-05',d1:'2026-06-08'},
+  {lot:'hire',zone:'Z4',act:'pose',ml:625,d0:'2026-06-09',d1:'2026-06-13'},
+  {lot:'hire',zone:'Z4',act:'pose',ml:2220,d0:'2026-06-09',d1:'2026-06-22'},
+  {lot:'hire',zone:'Z4',act:'ess',ml:2845,d0:'2026-06-22',d1:'2026-07-02'},
+  
+  // ═══════════════════ TOUMODI (Lot 6) ═══════════════════
+  {lot:'toumodi',act:'imp',ml:18946,d0:'2026-01-12',d1:'2026-01-20'},
+  {lot:'toumodi',act:'bar',ml:18946,d0:'2026-01-23',d1:'2026-01-31'},
+  {lot:'toumodi',act:'pose',ml:1675,d0:'2026-01-31',d1:'2026-02-10'},
+  {lot:'toumodi',act:'pose',ml:3935,d0:'2026-02-10',d1:'2026-03-02'},
+  {lot:'toumodi',act:'pose',ml:13336,d0:'2026-03-02',d1:'2026-05-05'},
+  {lot:'toumodi',act:'ess',ml:18946,d0:'2026-05-05',d1:'2026-06-24'},
+  {lot:'toumodi',act:'gc',nb:2,d0:'2026-06-24',d1:'2026-07-03'},
+  
+  // ═══════════════════ KOKOUMBO (Lot 7) ═══════════════════
+  {lot:'kokoumbo',act:'imp',ml:6993,d0:'2026-01-22',d1:'2026-01-26'},
+  {lot:'kokoumbo',act:'bar',ml:6993,d0:'2026-01-28',d1:'2026-02-02'},
+  {lot:'kokoumbo',act:'pose',ml:985,d0:'2026-02-02',d1:'2026-02-07'},
+  {lot:'kokoumbo',act:'pose',ml:450,d0:'2026-02-09',d1:'2026-02-12'},
+  {lot:'kokoumbo',act:'pose',ml:5558,d0:'2026-02-12',d1:'2026-03-11'},
+  {lot:'kokoumbo',act:'ess',ml:6993,d0:'2026-03-11',d1:'2026-04-02'},
+  {lot:'kokoumbo',act:'gc',nb:2,d0:'2026-04-02',d1:'2026-04-13'},
+  
+  // ═══════════════════ GBONTI (Lot 10) - pas de regards ═══════════════════
+  {lot:'gbonti',act:'imp',ml:1221,d0:'2026-04-13',d1:'2026-04-14'},
+  {lot:'gbonti',act:'bar',ml:1221,d0:'2026-04-16',d1:'2026-04-20'},
+  {lot:'gbonti',act:'pose',ml:1221,d0:'2026-04-20',d1:'2026-04-30'},
+  {lot:'gbonti',act:'ess',ml:1221,d0:'2026-04-30',d1:'2026-05-11'},
+  
+  // ═══════════════════ ZAHAKRO (Lot 8) ═══════════════════
+  {lot:'zahakro',act:'imp',ml:6362,d0:'2026-01-27',d1:'2026-01-28'},
+  {lot:'zahakro',act:'bar',ml:6362,d0:'2026-01-31',d1:'2026-02-06'},
+  {lot:'zahakro',act:'pose',ml:552,d0:'2026-02-06',d1:'2026-02-11'},
+  {lot:'zahakro',act:'pose',ml:5810,d0:'2026-02-11',d1:'2026-03-11'},
+  {lot:'zahakro',act:'ess',ml:6362,d0:'2026-03-11',d1:'2026-04-01'},
+  {lot:'zahakro',act:'gc',nb:1,d0:'2026-04-01',d1:'2026-04-11'},
+  
+  // ═══════════════════ ANGODA (Lot 9) - pas de regards ═══════════════════
+  {lot:'angoda',act:'imp',ml:6956,d0:'2026-04-15',d1:'2026-04-16'},
+  {lot:'angoda',act:'bar',ml:6956,d0:'2026-04-20',d1:'2026-04-24'},
+  {lot:'angoda',act:'pose',ml:6956,d0:'2026-04-24',d1:'2026-06-02'},
+  {lot:'angoda',act:'ess',ml:6956,d0:'2026-06-02',d1:'2026-06-22'},
+  
+  // ═══════════════════ PLANS DE RÉCOLEMENT (fin de chaque lot, 7 jours) ═══════════════════
+  {lot:'oume',act:'rec',ml:24482,d0:'2026-06-12',d1:'2026-07-03'},
+  {lot:'doukouya',act:'rec',ml:935,d0:'2026-02-11',d1:'2026-02-18'},
+  {lot:'diegonefla',act:'rec',ml:10269,d0:'2026-06-16',d1:'2026-07-03'},
+  {lot:'goueda',act:'rec',ml:4370,d0:'2026-07-03',d1:'2026-07-10'},
+  {lot:'hire',act:'rec',ml:12791,d0:'2026-07-02',d1:'2026-07-10'},
+  {lot:'toumodi',act:'rec',ml:18946,d0:'2026-07-03',d1:'2026-07-10'},
+  {lot:'kokoumbo',act:'rec',ml:6993,d0:'2026-04-13',d1:'2026-04-20'},
+  {lot:'gbonti',act:'rec',ml:1221,d0:'2026-05-11',d1:'2026-05-18'},
+  {lot:'zahakro',act:'rec',ml:6362,d0:'2026-04-11',d1:'2026-04-18'},
+  {lot:'angoda',act:'rec',ml:6956,d0:'2026-06-22',d1:'2026-06-29'},
+];
+
+// Courbe d'objectif pondéré (cumul pondéré en %, par mois) — V2 avec toutes activités
+// Principe : la contribution totale d'une tâche en % global dépend de la part de lot concernée
+// Pour les lots multi-zones (Oumé, Hiré), chaque tâche ne concerne qu'une zone donc on pondère
+function buildPlannedCurve(months){
+  const coefLots={};LOC.forEach(l=>{coefLots[l.id]=coefLot(l);});
+  const tPglob=LOC.reduce((s,l)=>s+l.tot,0);
+  const monthly={};
+  PLAN_TASKS.forEach(t=>{
+    const lot=LOC.find(l=>l.id===t.lot);if(!lot)return;
+    if(t.act==='gc'&&lot.regards===0)return;
+    // Déterminer le "total couvert" par cette tâche
+    // Pour une tâche sur une zone spécifique : zone.tot
+    // Pour une tâche lot-wide (sans zone) : lot.tot
+    let couv=lot.tot;
+    if(t.zone){
+      const zn=lot.zones.find(z=>z.zid===t.zone);
+      couv=zn?zn.tot:lot.tot;
+    }
+    const d0=new Date(t.d0),d1=new Date(t.d1);
+    let days=Math.round((d1-d0)/86400000);if(days<=0)days=1;
+    let contribTotal=0;
+    if(t.act==='pose'){
+      // Pose DN : 3 activités (soud+fou+rem) coef 2 chacune = 6
+      // Contribution = 6 × ml_tache / (coef_lot × tPglob) × 100
+      contribTotal=6*(t.ml||0)/coefLots[t.lot]/tPglob*100;
+    } else if(t.act==='bar'||t.act==='ess'){
+      // Bardage/Essai : contribution = coef × ml_tache / (coef_lot × tPglob) × 100
+      // ml_tache = couverture de la tâche (zone ou lot entier)
+      contribTotal=ACTIV[t.act].coef*(t.ml||0)/coefLots[t.lot]/tPglob*100;
+    } else if(t.act==='imp'){
+      // Implantation : contribution = coef × couv / (coef_lot × tPglob) × 100
+      contribTotal=ACTIV.imp.coef*couv/coefLots[t.lot]/tPglob*100;
+    } else if(t.act==='rec'){
+      // Plan récolement : 1 fois pour tout le lot
+      contribTotal=ACTIV.rec.coef*lot.tot/coefLots[t.lot]/tPglob*100;
+    } else if(t.act==='gc'){
+      // Regards : 1 fois pour tout le lot si applicable
+      contribTotal=ACTIV.gc.coef*lot.tot/coefLots[t.lot]/tPglob*100;
+    }
+    const contribParJour=contribTotal/days;
+    let cur=new Date(d0);
+    while(cur<d1){
+      const m=cur.toISOString().slice(0,7);
+      monthly[m]=(monthly[m]||0)+contribParJour;
+      cur.setDate(cur.getDate()+1);
+    }
+  });
+  let cum=0;
+  return months.map(m=>{cum+=(monthly[m]||0);return +(Math.min(cum,100)).toFixed(1);});
+}
+
+// ── ÉTAT INITIAL (bardage + implantation figés, injecté au 30/01/2026) ──
+// Implantation = 100% partout (figé à jamais)
+// Bardage = état au 30/01/2026 = valeurs Excel 24/04/2026 MOINS le bardage réalisé le 24/04
+// Le bardage du 24/04 est saisi séparément comme rapport journalier (db['2026-04-24'])
+// Total bardage état initial : 83 401,40 ml + 9 687,80 ml (24/04) = 93 089,20 ml ✅
+const ETAT_INITIAL_DATE='2026-01-30';
+const ETAT_INITIAL={
+  oume:{zones:{
+    Z1:{160:{bar:1947},110:{bar:1180},90:{bar:1357},63:{bar:5428}},
+    Z3:{160:{bar:0},90:{bar:0},63:{bar:0}}, // Bardé entièrement le 24/04 (240 tuyaux DN63)
+    Z4:{110:{bar:767},90:{bar:885},63:{bar:3245}},
+    Z5:{110:{bar:1062},90:{bar:944},63:{bar:3799.6}},
+  }},
+  hire:{zones:{
+    Z1:{90:{bar:295},63:{bar:1156.4}},
+    Z2:{110:{bar:342},90:{bar:306},63:{bar:1947}},
+    Z3:{110:{bar:861.4},90:{bar:1144.6},63:{bar:2430.8}},
+    Z4:{90:{bar:649},63:{bar:2242}},
+    Z5:{110:{bar:177},90:{bar:283.2},63:{bar:1416}},
+  }},
+  diegonefla:{zones:{_:{110:{bar:708},90:{bar:1534},63:{bar:8201}}}},
+  goueda:{zones:{_:{110:{bar:708},90:{bar:944},63:{bar:2773}}}},
+  doukouya:{zones:{_:{63:{bar:0}}}}, // Bardage commencé au 23/03/2026
+  toumodi:{zones:{_:{110:{bar:1711},90:{bar:4012},63:{bar:13334}}}},
+  kokoumbo:{zones:{_:{160:{bar:0},90:{bar:0},63:{bar:4130}}}}, // DN160: bardé le 24/04 ; DN90: bardé au 23/03/2026 ; DN63: partiel
+  zahakro:{zones:{_:{90:{bar:590},63:{bar:5841}}}},
+  angoda:{zones:{_:{63:{bar:0}}}}, // Bardage commencé au 23/03/2026 (4130 ml), +2891 ml le 24/04
+  gbonti:{zones:{_:{63:{bar:0}}}}, // Bardé entièrement le 24/04 (120 tuyaux DN63)
+};
+
+// ── STORAGE ──
+let db={},online=false,syncing=false,lastSync='';
+function isConfigured(){return API_URL&&!API_URL.includes('COLLER');}
+function normDate(d){if(!d)return'';if(typeof d==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(d))return d;const dt=new Date(d);if(isNaN(dt.getTime()))return String(d);return dt.toISOString().slice(0,10);}
+async function apiGet(a,p={}){if(!isConfigured())return null;const u=new URL(API_URL);u.searchParams.set('action',a);Object.entries(p).forEach(([k,v])=>u.searchParams.set(k,v));return(await fetch(u)).json();}
+async function apiPost(a,p){if(!isConfigured())return null;return(await fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({action:a,...p})})).json();}
+async function syncLoad(){syncing=true;draw();try{const r=await apiGet('loadAll');if(r&&r.ok){const raw=r.reports||{};db={};Object.entries(raw).forEach(([k,v])=>{db[normDate(k)]=v;});online=true;lastSync=new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});}}catch(e){online=false;}syncing=false;draw();}
+async function syncSave(d,data){db[d]=data;if(!isConfigured())return;syncing=true;draw();try{const r=await apiPost('save',{date:d,data});if(r?.ok){online=true;lastSync=new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});}}catch(e){online=false;}syncing=false;}
+async function syncDel(d){delete db[d];if(isConfigured())try{await apiPost('delete',{date:d,action:'delete'});}catch(e){}}
+
+// Helper : retourne les clés de db excluant les clés spéciales (aléas, etc.)
+// À utiliser pour toute itération sur les rapports journaliers
+function dbDates(){return Object.keys(db).filter(k=>!k.startsWith('__'));}
+
+// ── ALÉAS CHANTIER (risk register) ──
+// Stockage : clé spéciale '__aleas__' dans db (rapport contenant un tableau d'aléas)
+// Structure d'un aléa : {id, localite, type, titre, description, dateSignalement, dateResolution, statut, blocage, perdu, activitesReprises:[], references}
+const ALEA_KEY='__aleas__';
+const ALEA_TYPES={
+  reaffectation:'Réaffectation plan',
+  avenant:'Avenant / Travaux supp.',
+  attente_client:'Attente validation client',
+  technique:'Aléa technique',
+  meteo:'Aléa météo',
+  approvisionnement:'Approvisionnement',
+  social:'Aléa social',
+  administratif:'Aléa administratif'
+};
+const ALEA_TYPE_CLR={
+  reaffectation:{bg:'#E6F1FB',fg:'#0C447C'},
+  avenant:{bg:'#FAEEDA',fg:'#633806'},
+  attente_client:{bg:'#FBEAF0',fg:'#72243E'},
+  technique:{bg:'#FCEBEB',fg:'#791F1F'},
+  meteo:{bg:'#E1F5EE',fg:'#085041'},
+  approvisionnement:{bg:'#EEEDFE',fg:'#3C3489'},
+  social:{bg:'#F1EFE8',fg:'#444441'},
+  administratif:{bg:'#F1EFE8',fg:'#444441'}
+};
+const ALEA_STATUT={
+  resolu:{lbl:'✓ Résolu',cls:'bg'},
+  en_cours:{lbl:'En cours',cls:'bo'},
+  attente_client:{lbl:'En attente client',cls:'bo'}
+};
+function getAleas(){return db[ALEA_KEY]?.aleas||[];}
+async function saveAleas(aleas){
+  await syncSave(ALEA_KEY,{aleas,dt:ALEA_KEY});
+}
+// Calcul du nombre de jours entre signalement et résolution (ou aujourd'hui si non résolu)
+function calcBlocage(a){
+  if(!a.dateSignalement)return 0;
+  const d0=new Date(a.dateSignalement);
+  const d1=a.dateResolution?new Date(a.dateResolution):new Date();
+  return Math.max(0,Math.round((d1-d0)/86400000));
+}
+
+// ── AVANCEMENT PONDÉRÉ PAR LOT (Sprint 4A) ──
+// Retourne pour un lot : {pc: avancement global pondéré (%), detail: {imp,bar,soud,fou,rem,ess,gc,rec} en %}
+// Utilise la structure étendue de rapports (v2) avec bar/ess/imp/gc/rec, 
+// tout en restant rétrocompatible avec les anciens rapports (soud/fou/rem uniquement)
+function avancementLot(lot,cuLot){
+  const det={imp:0,bar:0,soud:0,fou:0,rem:0,ess:0,gc:0,rec:0};
+  // Implantation : oui/non au niveau lot (dans cuLot.imp si présent, sinon 0)
+  det.imp=Math.min(1,cuLot.imp||0)*100;
+  // Bardage, Essai : en ml par DN (somme sur toutes zones/DN du lot)
+  let barTot=0,essTot=0;
+  lot.zones.forEach(zn=>{
+    const zc=cuLot.zones?.[zn.zid];if(!zc)return;
+    Object.keys(zn.dn).forEach(dn=>{
+      const dc=zc.dn?.[dn]||{};
+      barTot+=Math.min(+dc.bar||0,zn.dn[dn]);
+      essTot+=Math.min(+dc.ess||0,zn.dn[dn]);
+    });
+  });
+  det.bar=lot.tot>0?(barTot/lot.tot)*100:0;
+  det.ess=lot.tot>0?(essTot/lot.tot)*100:0;
+  // Soudure, Fouille, Remblai : déjà dans cuLot (s, f, r) par DN
+  det.soud=lot.tot>0?(Math.min(cuLot.s,lot.tot)/lot.tot)*100:0;
+  det.fou=lot.tot>0?(Math.min(cuLot.f,lot.tot)/lot.tot)*100:0;
+  det.rem=lot.tot>0?(Math.min(cuLot.r,lot.tot)/lot.tot)*100:0;
+  // GC (regards) : compteur réalisé / total (uniquement si lot.regards > 0)
+  if(lot.regards>0){
+    det.gc=Math.min(1,(cuLot.gc||0)/lot.regards)*100;
+  }
+  // Plan récolement : oui/non au niveau lot
+  det.rec=Math.min(1,cuLot.rec||0)*100;
+  // Calcul pondéré
+  const cf=coefLot(lot);
+  let sum=0;
+  Object.keys(ACTIV).forEach(k=>{
+    if(k==='gc'&&lot.regards===0)return;
+    sum+=ACTIV[k].coef*det[k];
+  });
+  return{pc:cf>0?sum/cf:0,detail:det};
+}
+
+// Avancement global pondéré : moyenne pondérée par le linéaire de chaque lot
+function avancementGlobal(cu){
+  const tPglob=LOC.reduce((s,l)=>s+l.tot,0);
+  let sumPondere=0;
+  LOC.forEach(l=>{
+    const a=avancementLot(l,cu[l.id]);
+    sumPondere+=a.pc*(l.tot/tPglob);
+  });
+  return sumPondere;
+}
+
+// ── AVANCEMENT PHYSIQUE RÉEL ──
+// Mesure ce qui est physiquement livré au client : Remblai + Essai + Regards uniquement
+// Pondérations : conserve celles définies dans ACTIV (rem=2, ess=0.5, gc=0.5)
+// Pour lots sans regards : utilise coefLot() qui retire automatiquement le coef GC
+function avancementPhysiqueLot(lot,cuLot){
+  // Réutilise les détails calculés dans avancementLot (rem, ess, gc en %0-100)
+  const a=avancementLot(lot,cuLot);
+  // Activités physiques uniquement
+  const pondTotale=ACTIV.rem.coef+ACTIV.ess.coef+(lot.regards>0?ACTIV.gc.coef:0);
+  let sum=ACTIV.rem.coef*a.detail.rem+ACTIV.ess.coef*a.detail.ess;
+  if(lot.regards>0)sum+=ACTIV.gc.coef*a.detail.gc;
+  return pondTotale>0?sum/pondTotale:0;
+}
+function avancementPhysique(cu){
+  const tPglob=LOC.reduce((s,l)=>s+l.tot,0);
+  let sumPondere=0;
+  LOC.forEach(l=>{
+    sumPondere+=avancementPhysiqueLot(l,cu[l.id])*(l.tot/tPglob);
+  });
+  return sumPondere;
+}
+
+// ── CUMUL ENGINE ──
+// v2: étendu avec bar, ess, imp, gc, rec (rétrocompatible)
+function cumul(upTo){
+  const dates=dbDates().filter(d=>d<=upTo).sort(),c={};
+  LOC.forEach(l=>{
+    c[l.id]={t:0,s:0,f:0,r:0,imp:0,gc:0,rec:0,zones:{}};
+    l.zones.forEach(zn=>{
+      c[l.id].zones[zn.zid]={s:0,f:0,r:0,dn:{}};
+      Object.keys(zn.dn).forEach(d=>{c[l.id].zones[zn.zid].dn[d]={s:0,f:0,r:0,bar:0,ess:0};});
+    });
+  });
+  // ── INJECTION AUTOMATIQUE DE L'ÉTAT INITIAL ──
+  // Si la date de cumul >= date d'état initial, on injecte bardage + implantation figés
+  if(upTo>=ETAT_INITIAL_DATE){
+    LOC.forEach(l=>{
+      c[l.id].imp=1; // 100% implantation
+      const ei=ETAT_INITIAL[l.id];
+      if(ei&&ei.zones){
+        l.zones.forEach(zn=>{
+          Object.keys(zn.dn).forEach(dn=>{
+            const eiDn=ei.zones[zn.zid]?.[dn];
+            if(eiDn&&eiDn.bar)c[l.id].zones[zn.zid].dn[dn].bar=eiDn.bar;
+          });
+        });
+      }
+    });
+  }
+  // Pour bar/ess : on prend le MAX sur toutes les saisies (pas somme), car ce sont des cumuls saisis
+  // Pour imp/gc/rec : on prend le MAX sur toutes les saisies
+  dates.forEach(dt=>{const rp=db[dt];if(!rp?.loc)return;
+    LOC.forEach(l=>{const el=rp.loc[l.id];if(!el)return;c[l.id].t+=(+el.t||0);
+      if(el.imp)c[l.id].imp=Math.max(c[l.id].imp,+el.imp||0);
+      if(el.gc!==undefined)c[l.id].gc=Math.max(c[l.id].gc,+el.gc||0);
+      if(el.rec!==undefined)c[l.id].rec=Math.max(c[l.id].rec,+el.rec||0);
+      l.zones.forEach(zn=>{const ez=el.zones?.[zn.zid];if(!ez)return;
+        Object.keys(zn.dn).forEach(d=>{
+          const ed=ez[d]||{};
+          // Soud/Fou/Rem : cumul journalier (somme)
+          c[l.id].zones[zn.zid].dn[d].s+=(+ed.s||0);
+          c[l.id].zones[zn.zid].dn[d].f+=(+ed.f||0);
+          c[l.id].zones[zn.zid].dn[d].r+=(+ed.r||0);
+          // Ess : cumul saisi quotidien (somme, comme soud/fou/rem)
+          c[l.id].zones[zn.zid].dn[d].ess+=(+ed.ess||0);
+          // Bar : cumul saisi au max (sur-commandes possibles, pas journalier)
+          if(ed.bar!==undefined)c[l.id].zones[zn.zid].dn[d].bar=Math.max(c[l.id].zones[zn.zid].dn[d].bar,+ed.bar||0);
+        });
+      });
+      l.zones.forEach(zn=>{const zc=c[l.id].zones[zn.zid];zc.s=Object.values(zc.dn).reduce((a,b)=>a+b.s,0);zc.f=Object.values(zc.dn).reduce((a,b)=>a+b.f,0);zc.r=Object.values(zc.dn).reduce((a,b)=>a+b.r,0);});
+      c[l.id].s=Object.values(c[l.id].zones).reduce((a,b)=>a+b.s,0);c[l.id].f=Object.values(c[l.id].zones).reduce((a,b)=>a+b.f,0);c[l.id].r=Object.values(c[l.id].zones).reduce((a,b)=>a+b.r,0);
+    });});return c;}
+function dayTot(rp,lid){if(!rp?.loc?.[lid])return{s:0,f:0,r:0};let s=0,f=0,r=0;const loc=LOC.find(l=>l.id===lid);
+  loc.zones.forEach(zn=>{const ez=rp.loc[lid].zones?.[zn.zid];if(!ez)return;Object.keys(zn.dn).forEach(d=>{const ed=ez[d]||{};s+=(+ed.s||0);f+=(+ed.f||0);r+=(+ed.r||0);});});return{s,f,r};}
+// Day totals per DN for a loc (inclut essai)
+function dayDN(rp,lid){const r={};const loc=LOC.find(l=>l.id===lid);
+  loc.zones.forEach(zn=>{const ez=rp?.loc?.[lid]?.zones?.[zn.zid];if(!ez)return;
+    Object.keys(zn.dn).forEach(d=>{if(!r[d])r[d]={s:0,f:0,r:0,ess:0};const ed=ez[d]||{};r[d].s+=(+ed.s||0);r[d].f+=(+ed.f||0);r[d].r+=(+ed.r||0);r[d].ess+=(+ed.ess||0);});});return r;}
+
+// ── COHERENCE ENGINE ──
+// Checks cumul data for physical impossibilities
+// Rules: R_cumul ≤ F_cumul AND R_cumul ≤ S_cumul (per zone/DN)
+function checkCoherence(cu){
+  const alerts=[];
+  LOC.forEach(l=>{
+    const lc=cu[l.id];if(!lc)return;
+    if(lc.r>lc.f+0.5&&lc.r>0)alerts.push({loc:l.nm,zone:'',dn:'',type:'R>F',s:lc.s,f:lc.f,r:lc.r,excess:+(lc.r-lc.f).toFixed(1),level:'loc'});
+    if(lc.r>lc.s+0.5&&lc.r>0)alerts.push({loc:l.nm,zone:'',dn:'',type:'R>S',s:lc.s,f:lc.f,r:lc.r,excess:+(lc.r-lc.s).toFixed(1),level:'loc'});
+    l.zones.forEach(zn=>{const zc=lc.zones?.[zn.zid];if(!zc)return;
+      Object.keys(zn.dn).forEach(dn=>{const dc=zc.dn?.[dn];if(!dc)return;
+        if(dc.r>dc.f+0.5&&dc.r>0)alerts.push({loc:l.nm,zone:zn.zid!=='_'?zn.nm:'',dn,type:'R>F',s:dc.s,f:dc.f,r:dc.r,excess:+(dc.r-dc.f).toFixed(1),level:'dn'});
+        if(dc.r>dc.s+0.5&&dc.r>0)alerts.push({loc:l.nm,zone:zn.zid!=='_'?zn.nm:'',dn,type:'R>S',s:dc.s,f:dc.f,r:dc.r,excess:+(dc.r-dc.s).toFixed(1),level:'dn'});
+      });});});
+  return alerts.sort((a,b)=>b.excess-a.excess);}
+
+// Safe cumul: cap R at min(S,F) without modifying stored data
+function safeCumul(cu){
+  const sc=JSON.parse(JSON.stringify(cu));
+  LOC.forEach(l=>{
+    l.zones.forEach(zn=>{const zc=sc[l.id].zones?.[zn.zid];if(!zc)return;
+      Object.keys(zn.dn).forEach(dn=>{const dc=zc.dn?.[dn];if(!dc)return;
+        dc.r=Math.min(dc.r,dc.f,dc.s);if(dc.r<0)dc.r=0;});
+      zc.r=Object.values(zc.dn).reduce((a,b)=>a+b.r,0);});
+    sc[l.id].r=Object.values(sc[l.id].zones).reduce((a,b)=>a+b.r,0);});
+  return sc;}
+
+// Validate before save: check if new data would create cumul incoherence
+function validateSave(data){
+  const tmpDb={...db};tmpDb[SD]=data;
+  // Recalculate cumul with new data
+  const oldDb=db;db=tmpDb;const cu=cumul(SD);db=oldDb;
+  return checkCoherence(cu);}
+
+// Render coherence alert block
+function renderAlerts(alerts){
+  if(!alerts.length)return'';
+  const locAlerts=alerts.filter(a=>a.level==='loc');
+  const dnAlerts=alerts.filter(a=>a.level==='dn');
+  let h=`<div class="alert-box"><div class="alert-header">⚠️ ${alerts.length} incohérence${alerts.length>1?'s':''} détectée${alerts.length>1?'s':''}</div><div class="alert-body">`;
+  if(locAlerts.length){
+    h+=`<div class="alert-section">Par localité :</div>`;
+    locAlerts.forEach(a=>{
+      h+=`<div class="alert-item">• <b>${a.loc}</b> : ${a.type==='R>F'?'Remblai > Fouille':'Remblai > Soudure'} (R=${fmt(a.r)}, ${a.type==='R>F'?'F='+fmt(a.f):'S='+fmt(a.s)}, excès: ${fmt(a.excess)} ml)</div>`;});}
+  if(dnAlerts.length&&dnAlerts.length<=10){
+    h+=`<div class="alert-section">Par DN :</div>`;
+    dnAlerts.forEach(a=>{
+      h+=`<div class="alert-item">• <b>${a.loc}</b>${a.zone?' '+a.zone:''} DN${a.dn} : ${a.type==='R>F'?'R>F':'R>S'} (excès: ${fmt(a.excess)} ml)</div>`;});}
+  else if(dnAlerts.length>10){
+    h+=`<div class="alert-section">${dnAlerts.length} anomalies DN (affichage limité)</div>`;
+    dnAlerts.slice(0,5).forEach(a=>{
+      h+=`<div class="alert-item">• <b>${a.loc}</b>${a.zone?' '+a.zone:''} DN${a.dn} : excès ${fmt(a.excess)} ml</div>`;});
+    h+=`<div class="alert-item" style="color:#8a95a5">... et ${dnAlerts.length-5} autres</div>`;}
+  h+=`</div></div>`;return h;}
+
+let safeMode=false; // Toggle for safe display mode
+
+// ── HELPERS ──
+const fmt=n=>n.toLocaleString('fr-FR',{maximumFractionDigits:1});
+const pc=(r,t)=>t>0?(r/t*100):0;const pcS=(r,t)=>t>0?pc(r,t).toFixed(1)+'%':'—';
+const cP=p=>p>=80?'#36b37e':p>=50?'#2c7be5':p>=25?'#f5a623':'#e74c3c';
+const bC=p=>p>=80?'bg':p>=50?'bbl':p>=25?'bo':'br';
+const today=()=>new Date().toISOString().slice(0,10);
+const fD=ds=>{const[y,m,d]=ds.split('-');const M=['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];return`${+d} ${M[+m-1]} ${y}`;};
+const zv=v=>(!v||v===0)?'<span class="zz">—</span>':fmt(v);
+const bar=p=>`<div class="bw"><div class="pbb"><div class="bf" style="width:${Math.min(p,100)}%;background:${cP(p)}"></div></div><span class="bla" style="color:${cP(p)}">${p.toFixed(1)}%</span></div>`;
+
+let V='home',SD=today(),charts=[];
+let DG_ACT_PIVOT='r'; // Activité affichée dans le tableau pivot mensuel par localité: s/f/r/ess
+let DG_LOC_DETAIL=null; // Localité ouverte en détail (drill-down), null = fermé
+function dc(){charts.forEach(c=>{try{c.destroy();}catch(e){}});charts=[];}
+
+// ── ACCÈS ──
+const ACCESS_CODE='siyo2026'; // Changer ici pour rotation périodique
+function checkAccess(){
+  // Si déjà authentifié dans cette session, OK
+  if(sessionStorage.getItem('siyo_auth')==='1')return true;
+  // Sinon demander le code
+  const code=prompt('🔒 Code d\'accès — Avancement Dispersion 1B');
+  if(code===ACCESS_CODE){sessionStorage.setItem('siyo_auth','1');return true;}
+  document.body.innerHTML='<div style="font-family:DM Sans,sans-serif;text-align:center;padding:80px;color:#5a6778"><div style="font-size:48px;margin-bottom:20px">🔒</div><h2 style="color:#0f1b2d">Accès refusé</h2><p>Code incorrect.</p><button onclick="sessionStorage.clear();location.reload()" style="margin-top:20px;padding:10px 20px;background:#2c7be5;color:#fff;border:0;border-radius:6px;cursor:pointer;font-family:inherit">Réessayer</button></div>';
+  return false;
+}
+
+async function init(){
+  if(!checkAccess())return;
+  draw();if(isConfigured())await syncLoad();draw();
+}
+
+function draw(){dc();const a=document.getElementById('app');let h=hdr();if(syncing)h+=`<div class="sync-bar">🔄 Synchronisation...</div>`;
+  // 'home' et 'dg' pointent tous les deux vers la Synthèse (Accueil = Tableau de bord)
+  if(V==='home'||V==='dg')h+=pgDG();else if(V==='saisie')h+=pgSaisie();else if(V==='rapport')h+=pgRapport();else if(V==='hist')h+=pgHist();else if(V==='whatsapp')h+=pgWhatsapp();else if(V==='aleas')h+=pgAleas();else if(V==='attach')h+=pgAttachement();
+  a.innerHTML=h;if(V==='home'||V==='dg')setTimeout(mkDGCharts,80);}
+
+// ── HEADER ──
+function hdr(){
+  return`<div class="hd"><div class="hi">
+    <div class="hb" onclick="go('home')" style="cursor:pointer"><div class="hlogo">RJ</div><div><div class="htit">Avancement</div><div class="hsub">AEP Kimoukro — Dispersion 1B</div></div></div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <div class="sync-status"><span class="sync-dot ${online?'sd-green':isConfigured()?'sd-red':'sd-red'}"></span>${online?'Connecté · '+lastSync:isConfigured()?'Hors ligne':'Non configuré'} ${isConfigured()&&!syncing?'<button class="sync-btn" onclick="reload()">🔄</button>':''}</div>
+      <div class="nv">${[['home','Tableau de bord'],['saisie','Saisie'],['rapport','Rapport jour'],['hist','Historique'],['whatsapp','WhatsApp'],['aleas','Aléas'],['attach','Attachement']].map(([v,l])=>`<button class="nb ${V===v||(v==='home'&&V==='dg')?'ac':''}" onclick="go('${v}')">${l}</button>`).join('')}</div>
+    </div>
+  </div></div>`;}
+
+async function reload(){await syncLoad();}window.reload=reload;
+
+// ── SAISIE ──
+function pgSaisie(){
+  const ex=db[SD];
+  const cumAvant=cumul(SD);
+  let h=`<div class="mn"><div class="st">Saisie du rapport</div>
+    <div class="cd"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <div><label class="fl">Date</label><input type="date" class="fi" value="${SD}" onchange="SD=this.value;draw()" style="width:200px"></div>
+      ${ex?'<span class="kb bo">⚠️ Existant</span>':''}
+      <div style="flex:1"></div>
+      <span style="font-size:10px;color:#8a95a5;font-style:italic">Implantation & bardage figés au 30/01/2026</span>
+    </div></div>`;
+  
+  // Localités par zone avec DN
+  ZN.forEach(zone=>{const locs=LOC.filter(l=>l.z===zone);
+    h+=`<div class="cd"><div class="ct"><span class="dt" style="background:${zone==='Ouest'?'#2c7be5':'#00b8d9'}"></span> Zone ${zone}</div>`;
+    locs.forEach(loc=>{
+      const exL=ex?.loc?.[loc.id]||{};
+      const hasZ=loc.zones.length>1||loc.zones[0].zid!=='_';
+      const cuL=cumAvant[loc.id];
+      const avL=avancementLot(loc,cuL);
+      
+      h+=`<div class="lb">
+        <div class="lh">
+          <span class="ln">${loc.nm}</span>
+          <span class="lt">${fmt(loc.tot)} ml${loc.regards?' · '+loc.regards+' regards':''}</span>
+          <div style="flex:1"></div>
+          <span class="kb ${bC(avL.pc)}" style="font-size:10px">${avL.pc.toFixed(1)}%</span>
+        </div>`;
+      
+      // Tableau unique : S / F / R / Essai par DN
+      loc.zones.forEach(zn=>{
+        const dns=Object.keys(zn.dn).sort((a,b)=>a-b);
+        const exZ=exL.zones?.[zn.zid]||{};
+        if(hasZ)h+=`<div class="zn-label"><span class="zn-tag">${zn.nm}</span><span class="zn-tot">${fmt(zn.tot)} ml</span></div>`;
+        h+=`<table class="tb dnt"><thead><tr><th>DN</th><th>Prévu</th><th class="nr">Soudure</th><th class="nr">Fouille</th><th class="nr">Remblai</th><th class="nr">Essai</th></tr></thead><tbody>`;
+        dns.forEach(dn=>{const exD=exZ[dn]||{};
+          h+=`<tr><td><span class="dntg" style="background:${DN_CLR[dn]||'#8a95a5'}15;color:${DN_CLR[dn]||'#8a95a5'};border:1px solid ${DN_CLR[dn]||'#8a95a5'}44">DN ${dn}</span></td>
+            <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#8a95a5">${fmt(zn.dn[dn])}</td>
+            <td><input type="number" class="ci" id="s_${loc.id}_${zn.zid}_${dn}" value="${exD.s||''}" min="0" step=".1" placeholder="0"></td>
+            <td><input type="number" class="ci" id="f_${loc.id}_${zn.zid}_${dn}" value="${exD.f||''}" min="0" step=".1" placeholder="0"></td>
+            <td><input type="number" class="ci" id="r_${loc.id}_${zn.zid}_${dn}" value="${exD.r||''}" min="0" step=".1" placeholder="0"></td>
+            <td><input type="number" class="ci" id="ess_${loc.id}_${zn.zid}_${dn}" value="${exD.ess||''}" min="0" step=".1" placeholder="0"></td></tr>`;});
+        h+=`</tbody></table>`;
+      });
+      
+      // Regards (si applicable) + Plan récolement sur une même ligne compacte
+      const gcVal=ex?.loc?.[loc.id]?.gc!==undefined?ex.loc[loc.id].gc:0;
+      const recVal=ex?.loc?.[loc.id]?.rec||0;
+      h+=`<div style="display:flex;gap:10px;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid #eef1f6;flex-wrap:wrap">`;
+      if(loc.regards>0){
+        const gcCumul=cuL.gc||0;
+        h+=`<div style="display:flex;align-items:center;gap:6px">
+          <label class="fl" style="margin:0;font-size:10px">Regards (total lot)</label>
+          <input type="number" class="ci" id="gc_${loc.id}" value="${gcVal||''}" min="0" max="${loc.regards}" step="1" style="width:60px" placeholder="0">
+          <span style="font-size:10px;color:#8a95a5;font-family:'JetBrains Mono',monospace">/ ${loc.regards}${gcCumul?' (cumul: '+gcCumul+')':''}</span>
+        </div>`;
+      }
+      h+=`<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+        <input type="checkbox" id="rec_${loc.id}" ${recVal?'checked':''} style="width:14px;height:14px">
+        <span style="font-size:10px;color:#5a6778">Plan de récolement validé</span>
+      </label>
+      <div style="flex:1;min-width:200px"><label class="fl" style="margin:0;font-size:10px">Pièces</label><input type="text" class="ci ti" id="p_${loc.id}" value="${exL.p||''}" placeholder="Té 90/62, Bouchon..." style="width:100%"></div>`;
+      h+=`</div></div>`;
+    });
+    h+=`</div>`;
+  });
+
+  // Effectifs par zone/localité + Km/Carburant par zone
+  h+=`<div class="st">Effectifs, Kilométrage & Carburant</div>`;
+  ZN.forEach(zone=>{
+    const locs=LOC.filter(l=>l.z===zone);
+    const exZ=ex?.logistique?.[zone]||{};
+    h+=`<div class="cd"><div class="ct"><span class="dt" style="background:${zone==='Ouest'?'#2c7be5':'#00b8d9'}"></span> Zone ${zone}</div>
+      <table class="tb"><thead><tr><th>Localité</th><th class="nr">Fouilleurs</th><th class="nr">Soudeurs</th><th>Note</th></tr></thead><tbody>`;
+    locs.forEach(l=>{
+      const eL=ex?.eff?.[l.id]||{};
+      h+=`<tr><td>${l.nm}</td>
+        <td><input type="number" class="ci" id="ef_${l.id}" value="${eL.f||''}" min="0" placeholder="0"></td>
+        <td><input type="number" class="ci" id="es_${l.id}" value="${eL.s||''}" min="0" placeholder="0"></td>
+        <td><input type="text" class="ci ti" id="en_${l.id}" value="${eL.n||''}" placeholder=""></td></tr>`;
+    });
+    h+=`</tbody></table>
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid #eef1f6">
+      <div class="g3">
+        <div class="fr"><label class="fl">Km matin</label><input type="number" class="fi" id="lg_km1_${zone}" value="${exZ.km_matin||''}" placeholder="0"></div>
+        <div class="fr"><label class="fl">Km soir</label><input type="number" class="fi" id="lg_km2_${zone}" value="${exZ.km_soir||''}" placeholder="0"></div>
+        <div class="fr"><label class="fl">Carburant (L)</label><input type="number" class="fi" id="lg_carb_${zone}" value="${exZ.carburant||''}" min="0" step="1" placeholder="0"></div>
+      </div>
+      <div class="fr"><label class="fl">Remarques zone ${zone}</label><input type="text" class="fi" id="lg_rmq_${zone}" value="${exZ.remarques||''}" placeholder="RAS"></div>
+      </div>
+    </div>`;});
+
+  h+=`<div class="fr" style="margin-top:12px"><label class="fl">Remarques générales</label><textarea class="fi" id="rmq" rows="2" placeholder="RAS">${ex?.rmq||''}</textarea></div>
+  <div style="display:flex;gap:12px;margin-top:20px;justify-content:flex-end;flex-wrap:wrap">
+    <button class="bs" onclick="go('home')">Annuler</button>
+    <button class="bp" onclick="save()">💾 Enregistrer</button>
+    <button class="bp" style="background:#36b37e" onclick="saveGo()">💾 Enregistrer & Voir</button>
+  </div></div>`;return h;}
+
+function collect(){const d={loc:{},eff:{},logistique:{},rmq:'',dt:SD};
+  LOC.forEach(l=>{
+    const zones={};
+    l.zones.forEach(zn=>{
+      const zd={};
+      Object.keys(zn.dn).forEach(dn=>{
+        zd[dn]={
+          s:+(document.getElementById(`s_${l.id}_${zn.zid}_${dn}`)?.value)||0,
+          f:+(document.getElementById(`f_${l.id}_${zn.zid}_${dn}`)?.value)||0,
+          r:+(document.getElementById(`r_${l.id}_${zn.zid}_${dn}`)?.value)||0,
+          ess:+(document.getElementById(`ess_${l.id}_${zn.zid}_${dn}`)?.value)||0
+        };
+      });
+      zones[zn.zid]=zd;
+    });
+    d.loc[l.id]={
+      gc:+(document.getElementById('gc_'+l.id)?.value)||0,
+      rec:document.getElementById('rec_'+l.id)?.checked?1:0,
+      zones,
+      p:document.getElementById('p_'+l.id)?.value||''
+    };
+    d.eff[l.id]={f:+(document.getElementById('ef_'+l.id)?.value)||0,s:+(document.getElementById('es_'+l.id)?.value)||0,n:document.getElementById('en_'+l.id)?.value||''};
+  });
+  ZN.forEach(zone=>{d.logistique[zone]={km_matin:+(document.getElementById('lg_km1_'+zone)?.value)||0,km_soir:+(document.getElementById('lg_km2_'+zone)?.value)||0,carburant:+(document.getElementById('lg_carb_'+zone)?.value)||0,remarques:document.getElementById('lg_rmq_'+zone)?.value||''};});
+  d.rmq=document.getElementById('rmq')?.value||'RAS';return d;}
+async function save(){
+  const data=collect();
+  const alerts=validateSave(data);
+  if(alerts.length){
+    const top5=alerts.slice(0,5);
+    const msg=top5.map(a=>`${a.loc}${a.zone?' '+a.zone:''}${a.dn?' DN'+a.dn:''}: ${a.type==='R>F'?'R('+fmt(a.r)+')>F('+fmt(a.f)+')':'R('+fmt(a.r)+')>S('+fmt(a.s)+')'} +${fmt(a.excess)}ml`).join('\n');
+    if(!confirm(`⚠️ ${alerts.length} incohérence${alerts.length>1?'s':''} détectée${alerts.length>1?'s':''}:\n\n${msg}${alerts.length>5?'\n... et '+(alerts.length-5)+' autres':''}\n\nEnregistrer quand même ?`))return;
+  }
+  await syncSave(SD,data);toast('✅ Enregistré'+(online?' (sync)':' (local)'));draw();}
+async function saveGo(){
+  const data=collect();
+  const alerts=validateSave(data);
+  if(alerts.length){
+    const top5=alerts.slice(0,5);
+    const msg=top5.map(a=>`${a.loc}${a.dn?' DN'+a.dn:''}: ${a.type} +${fmt(a.excess)}ml`).join('\n');
+    if(!confirm(`⚠️ ${alerts.length} incohérence${alerts.length>1?'s':''}:\n${msg}\n\nEnregistrer ?`))return;
+  }
+  await syncSave(SD,data);V='rapport';draw();}
+
+// ── RAPPORT (détail DN, pas de graphiques) ──
+function pgRapport(){const rp=db[SD];let cu=cumul(SD);
+  const alerts=checkCoherence(cu);
+  if(safeMode)cu=safeCumul(cu);
+  if(!rp){const ds=dbDates().sort().reverse();return`<div class="mn"><div class="cd" style="text-align:center;padding:60px"><div style="font-size:40px;margin-bottom:16px">📋</div><div style="font-size:16px;font-weight:600;margin-bottom:8px">Aucun rapport pour le ${fD(SD)}</div><div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:16px">${ds.length?'<select class="fi" style="max-width:220px" onchange="SD=this.value;draw()"><option value="">— Choisir —</option>'+ds.map(d=>'<option value="'+d+'">'+fD(d)+'</option>').join('')+'</select>':''}<button class="bp" onclick="go('saisie')">✏️ Créer</button></div></div></div>`;}
+  const tP=LOC.reduce((s,l)=>s+l.tot,0);let cS=0,cF=0,cR=0,cE=0,cGC=0;
+  const tGCprev=LOC.reduce((s,l)=>s+(l.regards||0),0);
+  LOC.forEach(l=>{
+    cS+=cu[l.id].s;cF+=cu[l.id].f;cR+=cu[l.id].r;
+    cGC+=(cu[l.id].gc||0);
+    // Essai cumulé par DN
+    l.zones.forEach(zn=>{Object.keys(zn.dn).forEach(dn=>{cE+=(cu[l.id].zones[zn.zid].dn[dn]?.ess||0);});});
+  });
+  // Avancement pondéré global (toutes activités) et avancement physique réel (Rem+Ess+GC)
+  const avPond=avancementGlobal(cu);
+  const avPhys=avancementPhysique(cu);
+  let h=`<div class="mn"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
+    <div class="st" style="margin:0">Rapport du ${fD(SD)}</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <select class="fi" style="max-width:220px;margin:0" onchange="SD=this.value;draw()">${dbDates().sort().reverse().map(d=>`<option value="${d}" ${d===SD?'selected':''}>${fD(d)}</option>`).join('')}</select>
+      <button class="bs" onclick="V='saisie';draw()">✏️</button></div></div>
+    <div class="kr">
+      <div class="kc" style="border-left:4px solid #2c7be5"><div class="kl">Avancement pondéré</div><div class="kv">${avPond.toFixed(1)}<span class="ku">%</span></div><div class="ksb">Toutes activités</div></div>
+      <div class="kc" style="border-left:4px solid #36b37e"><div class="kl">Avancement physique</div><div class="kv" style="color:#36b37e">${avPhys.toFixed(1)}<span class="ku">%</span></div><div class="ksb">Rem + Ess + Regards</div></div>
+      <div class="kc"><div class="kl">Soudure</div><div class="kv">${fmt(cS)}<span class="ku">ml</span></div><span class="kb ${bC(pc(cS,tP))}">${pcS(cS,tP)}</span></div>
+      <div class="kc"><div class="kl">Fouille</div><div class="kv">${fmt(cF)}<span class="ku">ml</span></div><span class="kb ${bC(pc(cF,tP))}">${pcS(cF,tP)}</span></div>
+      <div class="kc"><div class="kl">Remblai</div><div class="kv">${fmt(cR)}<span class="ku">ml</span></div><span class="kb ${bC(pc(cR,tP))}">${pcS(cR,tP)}</span></div>
+      <div class="kc"><div class="kl">Essai</div><div class="kv">${fmt(Math.round(cE))}<span class="ku">ml</span></div><span class="kb ${bC(pc(cE,tP))}">${pcS(cE,tP)}</span></div>
+      <div class="kc"><div class="kl">Regards</div><div class="kv">${cGC}<span class="ku">/ ${tGCprev}</span></div><span class="kb ${tGCprev>0?bC(pc(cGC,tGCprev)):'bo'}">${tGCprev>0?pcS(cGC,tGCprev):'N/A'}</span></div>
+    </div>
+    ${renderAlerts(alerts)}
+    ${alerts.length?`<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <label style="font-size:12px;color:#5a6778;display:flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="checkbox" ${safeMode?'checked':''} onchange="safeMode=this.checked;draw()" style="width:16px;height:16px">
+        🛡️ Mode sécurisé (plafonner R ≤ min(S,F))
+      </label>
+      ${safeMode?'<span class="kb bg" style="font-size:10px">Actif</span>':''}
+    </div>`:''}`;
+
+  // Activités du jour — TABLEAU PAR ZONE / LOCALITÉ / DN
+  ZN.forEach(zone=>{const locs=LOC.filter(l=>l.z===zone);
+    h+=`<div class="cd"><div class="ct"><span class="dt" style="background:${zone==='Ouest'?'#2c7be5':'#00b8d9'}"></span> Activités du jour — Zone ${zone}</div>
+      <div style="overflow-x:auto"><table class="tb"><thead><tr><th>Localité</th><th>DN</th><th class="nr">Soudure</th><th class="nr">Fouille</th><th class="nr">Remblai</th><th class="nr">Essai</th><th>Pièces</th></tr></thead><tbody>`;
+    locs.forEach(l=>{
+      const dd=dayDN(rp,l.id);const pcs=(rp.loc[l.id]?.p||'').trim();
+      const allDN=new Set();l.zones.forEach(zn=>Object.keys(zn.dn).forEach(d=>allDN.add(d)));
+      const dns=[...allDN].sort((a,b)=>a-b);
+      const dsh=v=>(!v||v===0)?'—':fmt(v);
+      dns.forEach((dn,i)=>{
+        const v=dd[dn]||{s:0,f:0,r:0,ess:0};
+        h+=`<tr>${i===0?`<td rowspan="${dns.length}" style="font-weight:600;vertical-align:top;border-right:1px solid #eef1f6">${l.nm}</td>`:''}
+          <td><span class="dntg" style="background:${DN_CLR[dn]||'#8a95a5'}15;color:${DN_CLR[dn]||'#8a95a5'};border:1px solid ${DN_CLR[dn]||'#8a95a5'}44">DN ${dn}</span></td>
+          <td class="nr">${dsh(v.s)}</td><td class="nr">${dsh(v.f)}</td><td class="nr">${dsh(v.r)}</td><td class="nr" style="color:#e74c3c">${dsh(v.ess)}</td>
+          ${i===0?`<td rowspan="${dns.length}" style="font-size:11px;vertical-align:top">${pcs?pcs.split(',').map(p=>'<span class="pt">'+p.trim()+'</span>').join(' '):'—'}</td>`:''}
+        </tr>`;});
+    });
+    h+=`</tbody></table></div></div>`;});
+
+  // Cumul — détaillé par zone/DN pour Oumé & Hiré, par DN pour les autres
+  h+=`<div class="st">Cumul au ${fD(SD)}</div>`;
+  ZN.forEach(zone=>{const locs=LOC.filter(l=>l.z===zone);
+    const zP=locs.reduce((s,l)=>s+l.tot,0),zS=locs.reduce((s,l)=>s+cu[l.id].s,0),zF=locs.reduce((s,l)=>s+cu[l.id].f,0),zR=locs.reduce((s,l)=>s+cu[l.id].r,0);
+    // Cumul essai par zone
+    let zE=0;locs.forEach(l=>{l.zones.forEach(zn=>{Object.keys(zn.dn).forEach(dn=>{zE+=(cu[l.id].zones[zn.zid].dn[dn]?.ess||0);});});});
+    h+=`<div class="cd"><div class="ct"><span class="dt" style="background:${zone==='Ouest'?'#2c7be5':'#00b8d9'}"></span> Zone ${zone} — ${fmt(zP)} ml</div>
+      <div style="overflow-x:auto"><table class="tb"><thead><tr><th>Localité</th><th>Détail</th><th class="nr">Prévu</th><th class="nr">Soudure</th><th>%</th><th class="nr">Fouille</th><th>%</th><th class="nr">Remblai</th><th>%</th><th class="nr">Essai</th><th>%</th></tr></thead><tbody>`;
+    locs.forEach(l=>{
+      const c=cu[l.id],ps=pc(c.s,l.tot),pf=pc(c.f,l.tot),pr=pc(c.r,l.tot);
+      // Essai cumulé pour ce lot
+      let lE=0;l.zones.forEach(zn=>{Object.keys(zn.dn).forEach(dn=>{lE+=(c.zones[zn.zid].dn[dn]?.ess||0);});});
+      const pe=pc(lE,l.tot);
+      const hasSubZones=l.zones.length>1||l.zones[0].zid!=='_';
+      h+=`<tr style="background:#f8f9fb;font-weight:600"><td>${l.nm}</td><td style="color:#8a95a5;font-size:10px">TOTAL</td><td class="nr">${fmt(l.tot)}</td><td class="nr">${fmt(c.s)}</td><td>${bar(ps)}</td><td class="nr">${fmt(c.f)}</td><td>${bar(pf)}</td><td class="nr">${fmt(c.r)}</td><td>${bar(pr)}</td><td class="nr">${fmt(lE)}</td><td>${bar(pe)}</td></tr>`;
+
+      if(hasSubZones){
+        l.zones.forEach(zn=>{
+          const zc=cu[l.id].zones[zn.zid];
+          const znS=zc.s,znF=zc.f,znR=zc.r;
+          let znE=0;Object.keys(zn.dn).forEach(dn=>{znE+=(zc.dn[dn]?.ess||0);});
+          h+=`<tr style="background:#f0f4f8;font-weight:500;font-size:12px"><td></td><td><span class="zn-tag">${zn.nm}</span></td><td class="nr" style="color:#5a6778">${fmt(zn.tot)}</td><td class="nr">${fmt(znS)}</td><td>${bar(pc(znS,zn.tot))}</td><td class="nr">${fmt(znF)}</td><td>${bar(pc(znF,zn.tot))}</td><td class="nr">${fmt(znR)}</td><td>${bar(pc(znR,zn.tot))}</td><td class="nr">${fmt(znE)}</td><td>${bar(pc(znE,zn.tot))}</td></tr>`;
+          Object.keys(zn.dn).sort((a,b)=>a-b).forEach(dn=>{
+            const prevu=zn.dn[dn];
+            const dc=zc.dn[dn]||{s:0,f:0,r:0,ess:0};
+            h+=`<tr style="font-size:11px"><td></td>
+              <td style="padding-left:20px"><span class="dntg" style="background:${DN_CLR[dn]||'#8a95a5'}15;color:${DN_CLR[dn]||'#8a95a5'};border:1px solid ${DN_CLR[dn]||'#8a95a5'}44">DN ${dn}</span></td>
+              <td class="nr" style="color:#8a95a5">${fmt(prevu)}</td>
+              <td class="nr">${fmt(dc.s)}</td><td>${bar(pc(dc.s,prevu))}</td>
+              <td class="nr">${fmt(dc.f)}</td><td>${bar(pc(dc.f,prevu))}</td>
+              <td class="nr">${fmt(dc.r)}</td><td>${bar(pc(dc.r,prevu))}</td>
+              <td class="nr">${fmt(dc.ess||0)}</td><td>${bar(pc(dc.ess||0,prevu))}</td></tr>`;
+          });
+        });
+      } else {
+        const zn=l.zones[0],zc=cu[l.id].zones[zn.zid];
+        Object.keys(zn.dn).sort((a,b)=>a-b).forEach(dn=>{
+          const prevu=zn.dn[dn];
+          const dc=zc.dn[dn]||{s:0,f:0,r:0,ess:0};
+          h+=`<tr style="font-size:11px"><td></td>
+            <td><span class="dntg" style="background:${DN_CLR[dn]||'#8a95a5'}15;color:${DN_CLR[dn]||'#8a95a5'};border:1px solid ${DN_CLR[dn]||'#8a95a5'}44">DN ${dn}</span></td>
+            <td class="nr" style="color:#8a95a5">${fmt(prevu)}</td>
+            <td class="nr">${fmt(dc.s)}</td><td>${bar(pc(dc.s,prevu))}</td>
+            <td class="nr">${fmt(dc.f)}</td><td>${bar(pc(dc.f,prevu))}</td>
+            <td class="nr">${fmt(dc.r)}</td><td>${bar(pc(dc.r,prevu))}</td>
+            <td class="nr">${fmt(dc.ess||0)}</td><td>${bar(pc(dc.ess||0,prevu))}</td></tr>`;
+        });
+      }
+    });
+    const psZ=pc(zS,zP),pfZ=pc(zF,zP),prZ=pc(zR,zP),peZ=pc(zE,zP);
+    h+=`<tr style="font-weight:700;border-top:3px solid #dce1e9;background:#f0f4f8"><td>Total Zone ${zone}</td><td></td><td class="nr">${fmt(zP)}</td><td class="nr">${fmt(zS)}</td><td><span class="kb ${bC(psZ)}">${psZ.toFixed(1)}%</span></td><td class="nr">${fmt(zF)}</td><td><span class="kb ${bC(pfZ)}">${pfZ.toFixed(1)}%</span></td><td class="nr">${fmt(zR)}</td><td><span class="kb ${bC(prZ)}">${prZ.toFixed(1)}%</span></td><td class="nr">${fmt(zE)}</td><td><span class="kb ${bC(peZ)}">${peZ.toFixed(1)}%</span></td></tr></tbody></table></div></div>`;});
+
+  // Logistique par zone avec effectifs par localité
+  h+=`<div class="st">Logistique</div>`;
+  ZN.forEach(zone=>{const locs=LOC.filter(l=>l.z===zone);const lg=rp.logistique?.[zone]||{};const km=(lg.km_soir||0)-(lg.km_matin||0);
+    // Effectifs par localité
+    let tFl=0,tSd=0;
+    locs.forEach(l=>{const e=rp.eff?.[l.id]||{};tFl+=(+e.f||0);tSd+=(+e.s||0);});
+    h+=`<div class="cd"><div class="ct"><span class="dt" style="background:${zone==='Ouest'?'#2c7be5':'#00b8d9'}"></span> Zone ${zone}</div>`;
+    // Effectifs table
+    if(tFl+tSd>0){
+      h+=`<table class="tb" style="margin-bottom:12px"><thead><tr><th>Localité</th><th class="nr">Fouilleurs</th><th class="nr">Soudeurs</th><th>Note</th></tr></thead><tbody>`;
+      locs.forEach(l=>{const e=rp.eff?.[l.id]||{};if(!(+e.f||0)&&!(+e.s||0))return;
+        h+=`<tr><td>${l.nm}</td><td class="nr">${e.f||0}</td><td class="nr">${e.s||0}</td><td style="font-size:11px;color:#8a95a5">${e.n||''}</td></tr>`;});
+      h+=`<tr style="font-weight:700;border-top:2px solid #dce1e9"><td>Total</td><td class="nr">${tFl}</td><td class="nr">${tSd}</td><td></td></tr></tbody></table>`;}
+    // Km & Carburant
+    h+=`<div class="kr">`;
+    if(km)h+=`<div class="kc"><div class="kl">Km</div><div class="kv">${fmt(km)}</div><div class="ksb">${fmt(lg.km_matin||0)} → ${fmt(lg.km_soir||0)}</div></div>`;
+    if(lg.carburant)h+=`<div class="kc"><div class="kl">Carburant</div><div class="kv">${lg.carburant}<span class="ku">L</span></div></div>`;
+    h+=`</div>`;
+    if(lg.remarques&&lg.remarques!=='RAS')h+=`<div style="font-size:12px;color:#5a6778">📝 ${lg.remarques}</div>`;
+    h+=`</div>`;});
+
+  h+=`<div class="cd" style="border-left:4px solid #36b37e"><div class="ct" style="color:#36b37e">📝 Remarques</div><div style="font-size:13px;color:#5a6778">${rp.rmq||'RAS'}</div></div></div>`;
+  return h;}
+
+// ── WHATSAPP ──
+function pgWhatsapp(){
+  const rp=db[SD],cu=cumul(SD);
+  let h=`<div class="mn"><div class="st">Rapport WhatsApp</div>
+    <div class="cd"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      <div><label class="fl">Date</label><select class="fi" style="width:220px" onchange="SD=this.value;draw()">${dbDates().sort().reverse().map(d=>`<option value="${d}" ${d===SD?'selected':''}>${fD(d)}</option>`).join('')}</select></div>
+    </div></div>`;
+
+  if(!rp)return h+`<div class="cd" style="text-align:center;padding:40px;color:#8a95a5">Aucun rapport pour cette date</div></div>`;
+
+  ZN.forEach(zone=>{
+    const locs=LOC.filter(l=>l.z===zone);
+    const lg=rp.logistique?.[zone]||{};
+    const km=(lg.km_soir||0)-(lg.km_matin||0);
+    let txt=`*📊 RAPPORT JOURNALIER D'ACTIVITÉS*\n`;
+    txt+=`*Projet :* Dispersion 1B\n`;
+    txt+=`*Date :* ${fD(SD)}\n`;
+    txt+=`*Zone :* ${zone}\n`;
+    txt+=`━━━━━━━━━━━━━━━━━━\n\n`;
+    txt+=`*1. ACTIVITÉS DU JOUR*\n\n`;
+
+    locs.forEach(l=>{
+      const dd=dayDN(rp,l.id);const tot=dayTot(rp,l.id);
+      const pcs=(rp.loc[l.id]?.p||'').trim();
+      txt+=`📍 *${l.nm.toUpperCase()}*\n`;
+      const dns=Object.keys(dd).sort((a,b)=>a-b);
+      let hasAct=false;
+      dns.forEach(dn=>{const v=dd[dn];if(v.s+v.f+v.r+(v.ess||0)===0)return;hasAct=true;
+        let parts=[];
+        if(v.s)parts.push('Soudure: '+fmt(v.s)+' ml');
+        if(v.f)parts.push('Fouille: '+fmt(v.f)+' ml');
+        if(v.r)parts.push('Remblai: '+fmt(v.r)+' ml');
+        if(v.ess)parts.push('Essai: '+fmt(v.ess)+' ml');
+        txt+=`  ▸ DN${dn} — ${parts.join(' | ')}\n`;});
+      if(!hasAct)txt+=`  ▸ Aucune activité\n`;
+      if(pcs)txt+=`  ▸ Pièces: ${pcs}\n`;
+      txt+=`\n`;});
+
+    txt+=`━━━━━━━━━━━━━━━━━━\n`;
+    txt+=`*2. CUMUL DES TRAVAUX*\n\n`;
+    locs.forEach(l=>{
+      const c=cu[l.id];
+      // Essai cumulé
+      let lE=0;l.zones.forEach(zn=>{Object.keys(zn.dn).forEach(dn=>{lE+=(c.zones[zn.zid].dn[dn]?.ess||0);});});
+      const a=avancementLot(l,c);
+      const aPhys=avancementPhysiqueLot(l,c);
+      txt+=`📍 *${l.nm.toUpperCase()}* — Avancement pondéré: *${a.pc.toFixed(1)}%* · Physique: *${aPhys.toFixed(1)}%*\n`;
+      txt+=`  ▸ Soudure: ${fmt(c.s)} / ${fmt(l.tot)} ml (${pc(c.s,l.tot).toFixed(1)}%)\n`;
+      txt+=`  ▸ Fouille: ${fmt(c.f)} ml (${pc(c.f,l.tot).toFixed(1)}%)\n`;
+      txt+=`  ▸ Remblai: ${fmt(c.r)} ml (${pc(c.r,l.tot).toFixed(1)}%)\n`;
+      txt+=`  ▸ Essai: ${fmt(lE)} ml (${pc(lE,l.tot).toFixed(1)}%)\n`;
+      if(l.regards>0)txt+=`  ▸ Regards: ${c.gc||0} / ${l.regards}\n`;
+      txt+=`\n`;});
+
+    txt+=`━━━━━━━━━━━━━━━━━━\n`;
+    txt+=`*3. EFFECTIFS & LOGISTIQUE*\n\n`;
+    let tFl2=0,tSd2=0;
+    locs.forEach(l=>{const e=rp.eff?.[l.id]||{};const fl=(+e.f||0),sd=(+e.s||0);if(!fl&&!sd)return;tFl2+=fl;tSd2+=sd;
+      txt+=`  👷 ${l.nm}: ${fl} fouilleurs, ${sd} soudeurs${e.n?' ('+e.n+')':''}\n`;});
+    if(tFl2+tSd2>0)txt+=`  *Total: ${tFl2+tSd2}* (${tFl2} fouil. ${tSd2} soud.)\n`;
+    if(km)txt+=`  🚗 Km: ${fmt(km)} km (${fmt(lg.km_matin||0)} → ${fmt(lg.km_soir||0)})\n`;
+    if(lg.carburant)txt+=`  ⛽ Carburant: ${lg.carburant} L\n`;
+    if(lg.remarques&&lg.remarques!=='RAS')txt+=`\n📝 ${lg.remarques}\n`;
+    txt+=`\n*Remarque :* ${rp.rmq||'RAS'}`;
+
+    h+=`<div class="cd"><div class="ct"><span class="dt" style="background:${zone==='Ouest'?'#2c7be5':'#00b8d9'}"></span> Zone ${zone}</div>
+      <pre class="wa-txt" id="wa_${zone}">${txt}</pre>
+      <button class="bp" style="width:100%;margin-top:8px;background:#25D366" onclick="copyWA('${zone}')">📋 Copier le rapport Zone ${zone}</button>
+    </div>`;});
+  h+=`</div>`;return h;}
+
+function copyWA(zone){const el=document.getElementById('wa_'+zone);if(!el)return;
+  navigator.clipboard.writeText(el.textContent).then(()=>toast('📋 Copié !')).catch(()=>{
+    const r=document.createRange();r.selectNode(el);window.getSelection().removeAllRanges();window.getSelection().addRange(r);document.execCommand('copy');window.getSelection().removeAllRanges();toast('📋 Copié !');});}
+window.copyWA=copyWA;
+
+// ── VUE DG (Direction Générale) ──
+
+// Group daily productions by month
+function groupByMonth(){
+  const months={};
+  dbDates().sort().forEach(d=>{
+    const m=d.slice(0,7); // YYYY-MM
+    if(!months[m])months[m]={s:0,f:0,r:0,days:0};
+    const rp=db[d];if(!rp?.loc)return;
+    months[m].days++;
+    LOC.forEach(l=>{const dt=dayTot(rp,l.id);months[m].s+=dt.s;months[m].f+=dt.f;months[m].r+=dt.r;});
+  });
+  return months;
+}
+
+// ── KPI PILOTAGE ──
+
+// Cadence remblai sur les N derniers jours avec saisie (conservée pour affichage info)
+// Retourne {mlParJour, joursActifs, totalPeriode}
+function cadenceRecente(nbJours){
+  const ds=dbDates().sort().reverse();
+  if(!ds.length)return{mlParJour:0,joursActifs:0,totalPeriode:0};
+  const refDate=new Date(ds[0]);
+  const seuilDate=new Date(refDate);seuilDate.setDate(seuilDate.getDate()-nbJours+1);
+  const seuilStr=seuilDate.toISOString().slice(0,10);
+  let totalR=0,jActifs=0;
+  ds.filter(d=>d>=seuilStr).forEach(d=>{
+    const rp=db[d];if(!rp?.loc)return;
+    let rJ=0;LOC.forEach(l=>{rJ+=dayTot(rp,l.id).r;});
+    if(rJ>0){totalR+=rJ;jActifs++;}
+  });
+  return{mlParJour:jActifs>0?totalR/jActifs:0,joursActifs:jActifs,totalPeriode:totalR};
+}
+
+// Cadence PONDÉRÉE : vitesse d'avancement global en pts / jour calendaire
+// Calcule la différence d'avancement pondéré entre aujourd'hui et il y a nbJours
+// Base = jours calendaires (pas seulement jours actifs) pour une projection honnête
+function cadencePonderee(nbJours){
+  const ds=dbDates().sort();
+  if(!ds.length)return{ptsParJour:0,avActuel:0,avAncien:0};
+  const ref=ds[ds.length-1]; // date du dernier rapport
+  const refDate=new Date(ref);
+  const seuilDate=new Date(refDate);seuilDate.setDate(seuilDate.getDate()-nbJours);
+  const seuilStr=seuilDate.toISOString().slice(0,10);
+  // Avancement pondéré à la date de référence
+  const cuActuel=cumul(ref);
+  const avActuel=avancementGlobal(cuActuel);
+  // Avancement pondéré à nbJours avant la référence
+  const cuAncien=cumul(seuilStr);
+  const avAncien=avancementGlobal(cuAncien);
+  const ptsParJour=(avActuel-avAncien)/nbJours;
+  return{ptsParJour,avActuel,avAncien,dateRef:ref,dateSeuil:seuilStr};
+}
+
+// Projection date de fin basée sur cadence pondérée (B1 - refonte)
+// Inclut TOUTES les activités (bardage, soud, fou, rem, ess, regards, récolement)
+function projectionFin(){
+  const cu=cumul('9999-12-31');
+  const avActuel=avancementGlobal(cu);
+  const reste=100-avActuel;
+  if(reste<=0)return{date:null,joursRestants:0,termine:true};
+  const cad=cadencePonderee(FENETRE_CADENCE_J);
+  if(cad.ptsParJour<=0)return{date:null,joursRestants:null,termine:false,noCadence:true,avActuel};
+  const joursCalendaires=Math.ceil(reste/cad.ptsParJour);
+  const ds=dbDates().sort().reverse();
+  const refDate=new Date(ds[0]);
+  const finDate=new Date(refDate);finDate.setDate(finDate.getDate()+joursCalendaires);
+  return{
+    date:finDate.toISOString().slice(0,10),
+    joursRestants:joursCalendaires,
+    cadencePts:cad.ptsParJour,
+    reste,
+    avActuel,
+    termine:false
+  };
+}
+
+// Écart Réel/Objectif global à date (B2) — méthode BCWS / Earned Value
+// Interpolation linéaire de l'objectif au JOUR du dernier rapport.
+// Exemple : au 17 avril, objectif fin mars=55,9% et fin avril=73,7%
+// → progression intra-avril = 17/30 (jour du mois / jours du mois)
+// → objectif au 17/04 = 55,9% + (73,7% − 55,9%) × 17/30 = 65,9%
+// On compare ensuite ce point à l'avancement réel pondéré → écart juste et quotidien.
+function ecartObjectif(){
+  const cu=cumul('9999-12-31');
+  const pcReel=avancementGlobal(cu);
+  const ds=dbDates().sort().reverse();
+  if(!ds.length)return{pcReel:0,pcObjectif:0,ecart:0,critique:false,dateRef:null};
+  const dateRef=ds[0]; // Date du dernier rapport (référence stable)
+  const[yy,mm,jj]=dateRef.split('-').map(Number);
+  // Mois précédent (fin du mois passé = début de l'interpolation)
+  const moisPrec=new Date(yy,mm-2,1).toISOString().slice(0,7);
+  // Mois en cours (fin du mois en cours = fin de l'interpolation)
+  const moisEnCours=new Date(yy,mm-1,1).toISOString().slice(0,7);
+  // Construire la courbe complète depuis décembre 2025 jusqu'au mois en cours
+  const allMonths=[];
+  const start=new Date('2025-12-01');
+  const end=new Date(yy,mm-1,1); // 1er jour du mois en cours
+  let d=new Date(start);
+  while(d<=end){
+    allMonths.push(d.toISOString().slice(0,7));
+    d.setMonth(d.getMonth()+1);
+  }
+  const curve=buildPlannedCurve(allMonths);
+  // Récupérer les 2 valeurs de référence (fin mois précédent et fin mois en cours)
+  const idxPrec=allMonths.indexOf(moisPrec);
+  const idxEnCours=allMonths.indexOf(moisEnCours);
+  const objFinMoisPrec=idxPrec>=0?curve[idxPrec]:0;
+  const objFinMoisEnCours=idxEnCours>=0?curve[idxEnCours]:objFinMoisPrec;
+  // Interpolation linéaire : ratio jour / jours-du-mois
+  const joursDansMois=new Date(yy,mm,0).getDate(); // mm est 1-indexé pour Date(y,m,0) qui donne dernier jour du mois m-1
+  const ratioJour=jj/joursDansMois;
+  const pcObjectif=objFinMoisPrec+(objFinMoisEnCours-objFinMoisPrec)*ratioJour;
+  const ecart=pcObjectif-pcReel; // positif = retard, négatif = avance
+  return{
+    pcReel:+pcReel.toFixed(1),
+    pcObjectif:+pcObjectif.toFixed(1),
+    ecart:+ecart.toFixed(1),
+    critique:ecart>SEUIL_RETARD_CRITIQUE,
+    dateRef,
+    objFinMoisPrec:+objFinMoisPrec.toFixed(1),
+    objFinMoisEnCours:+objFinMoisEnCours.toFixed(1),
+    ratioJour:+(ratioJour*100).toFixed(0)
+  };
+}
+
+// Tendance 7j vs 7j précédents (B4) — refonte pondérée
+// Compare : progression des 7 derniers jours (en pts d'avancement global) vs progression des 7 jours précédents
+// Base : jours CALENDAIRES (pas actifs) pour une évaluation honnête du rythme
+function tendance7j(){
+  const ds=dbDates().sort().reverse();
+  if(!ds.length)return{delta7j:0,delta7j14:0,acceleration:0,evolution:'='};
+  const ref=ds[0]; // dernier rapport
+  const refDate=new Date(ref);
+  const d7=new Date(refDate);d7.setDate(d7.getDate()-7);
+  const d14=new Date(refDate);d14.setDate(d14.getDate()-14);
+  const s7=d7.toISOString().slice(0,10);
+  const s14=d14.toISOString().slice(0,10);
+  // Avancement global pondéré aux 3 dates clés
+  const avRef=avancementGlobal(cumul(ref));
+  const av7=avancementGlobal(cumul(s7));
+  const av14=avancementGlobal(cumul(s14));
+  // Progression sur chaque fenêtre (en pts)
+  const delta7j=avRef-av7;       // Progression des 7 derniers jours
+  const delta7j14=av7-av14;      // Progression des 7 jours précédents
+  // Accélération = différence de rythme entre les 2 fenêtres
+  const acceleration=delta7j-delta7j14;
+  return{
+    delta7j:+delta7j.toFixed(2),
+    delta7j14:+delta7j14.toFixed(2),
+    acceleration:+acceleration.toFixed(2),
+    avRef:+avRef.toFixed(1),
+    evolution:acceleration>0.1?'↑':acceleration<-0.1?'↓':'='
+  };
+}
+
+// Retard en jours par lot (B3) : compare cadence cumulée réelle vs planning linéaire
+function retardParLot(cu){
+  const retards={};
+  const ds=dbDates().sort().reverse();
+  if(!ds.length){LOC.forEach(l=>retards[l.id]=null);return retards;}
+  const refDate=new Date(ds[0]);
+  LOC.forEach(l=>{
+    const r=cu[l.id].r;
+    // Trouver les tâches du planning concernant ce lot (approximation par ml total de la loc)
+    // Méthode: calculer à quel pourcentage du planning théorique on devrait être à cette date
+    const cad=cadenceRecente(FENETRE_CADENCE_J);
+    if(cad.mlParJour<=0){retards[l.id]=null;return;}
+    // Théorique = % planning à date × tot du lot
+    const moisCourant=ds[0].slice(0,7);
+    const pcObj=(buildPlannedCurve([moisCourant])[0]||0)/100;
+    const theoriqueLot=pcObj*l.tot;
+    const retardMl=theoriqueLot-r;
+    if(retardMl<=0){retards[l.id]={jours:0,ml:0,avance:true};return;}
+    // Convertir en jours sur la part de cadence allouée (proportionnelle à la taille du lot)
+    const tP=LOC.reduce((s,ll)=>s+ll.tot,0);
+    const partCadence=cad.mlParJour*(l.tot/tP);
+    const jours=partCadence>0?Math.round(retardMl/partCadence):null;
+    retards[l.id]={jours,ml:Math.round(retardMl),avance:false};
+  });
+  return retards;
+}
+
+// Month name
+function moisNm(ym){
+  const[y,m]=ym.split('-');
+  const noms=['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+  return noms[+m-1]+' '+y;
+}
+
+// Rendu de la carte Aléas dans le Tableau de bord (vue compacte avec tous les aléas)
+function renderAleasCard(){
+  const aleas=getAleas().slice().sort((a,b)=>(b.dateSignalement||'').localeCompare(a.dateSignalement||''));
+  const nbActifs=aleas.filter(a=>a.statut!=='resolu').length;
+  const totalBlocage=aleas.reduce((s,a)=>s+(calcBlocage(a)||0),0);
+  const totalPerdu=aleas.reduce((s,a)=>s+(+a.perdu||0),0);
+  
+  let h=`<div class="st">Aléas chantier</div>
+  <div class="cd">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="font-size:13px;font-weight:600;color:#0f1b2d">📋 ${aleas.length} aléa${aleas.length>1?'s':''}</span>
+        ${nbActifs>0?`<span class="kb bo" style="font-size:10px">${nbActifs} actif${nbActifs>1?'s':''}</span>`:''}
+        <span style="font-size:11px;color:#8a95a5">Impact cumulé : <b style="color:#e74c3c">${totalPerdu} j perdus</b></span>
+      </div>
+      <button class="bs" style="font-size:11px;padding:5px 12px" onclick="go('aleas')">📋 Gérer les aléas →</button>
+    </div>`;
+  
+  if(aleas.length===0){
+    h+=`<div style="text-align:center;padding:24px;color:#8a95a5;font-size:12px">
+      Aucun aléa enregistré. <a href="#" onclick="go('aleas');return false" style="color:#2c7be5">Ajouter un aléa</a> pour tracer les difficultés du chantier.
+    </div></div>`;
+    return h;
+  }
+  
+  h+=`<div style="overflow-x:auto"><table class="tb"><thead><tr>
+    <th style="font-size:9px">ID</th>
+    <th style="font-size:9px">Localité</th>
+    <th style="font-size:9px">Type</th>
+    <th style="font-size:9px">Aléa</th>
+    <th class="nr" style="font-size:9px">Signalé</th>
+    <th class="nr" style="font-size:9px">Résolu</th>
+    <th class="nr" style="font-size:9px">Perdu</th>
+    <th style="font-size:9px">Statut</th>
+  </tr></thead><tbody>`;
+  aleas.forEach(a=>{
+    const t=ALEA_TYPES[a.type]||a.type;
+    const tc=ALEA_TYPE_CLR[a.type]||{bg:'#f0f4f8',fg:'#5a6778'};
+    const st=ALEA_STATUT[a.statut]||{lbl:a.statut,cls:'bo'};
+    const loc=a.localite==='tous'?'Tous lots':(LOC.find(l=>l.id===a.localite)?.nm||a.localite);
+    const actsRep=(a.activitesReprises||[]).map(k=>({imp:'Imp',bar:'Bar',soud:'Soud',fou:'Fou',rem:'Rem'}[k]||k)).join(', ');
+    h+=`<tr style="cursor:pointer" onclick="aleaEdit('${a.id}');go('aleas')">
+      <td style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#8a95a5">${a.id}</td>
+      <td style="font-weight:600;font-size:11px">${loc}</td>
+      <td><span style="background:${tc.bg};color:${tc.fg};font-size:10px;padding:2px 7px;border-radius:6px">${t}</span></td>
+      <td style="font-size:11px;max-width:280px">
+        ${a.titre}
+        ${actsRep?`<div style="font-size:9px;color:#8a95a5;margin-top:1px">↻ Reprises : ${actsRep}</div>`:''}
+      </td>
+      <td class="nr" style="font-family:'JetBrains Mono',monospace;font-size:10px">${a.dateSignalement?fD(a.dateSignalement).slice(0,5):'—'}</td>
+      <td class="nr" style="font-family:'JetBrains Mono',monospace;font-size:10px">${a.dateResolution?fD(a.dateResolution).slice(0,5):'—'}</td>
+      <td class="nr" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#e74c3c;font-weight:600">${a.perdu||0} j</td>
+      <td><span class="kb ${st.cls}" style="font-size:9px">${st.lbl}</span></td>
+    </tr>`;
+  });
+  h+=`</tbody></table></div>
+    <div style="font-size:10px;color:#8a95a5;margin-top:6px;font-style:italic">💡 Cliquez sur une ligne pour modifier l'aléa.</div>
+  </div>`;
+  return h;
+}
+
+// Rendu du drill-down : détail d'une localité par DN et par mois
+// Affiche : Mois × DN (production) + Total + Cumul progressif + comparaison vs prévu
+function renderLocDetail(cu,mKeys,actLabels,actColors){
+  if(!DG_LOC_DETAIL)return'';
+  const loc=LOC.find(l=>l.id===DG_LOC_DETAIL);
+  if(!loc)return'';
+  const act=DG_ACT_PIVOT; // activité sélectionnée (s/f/r/ess)
+  const clr=actColors[act];
+  const actLbl=actLabels[act];
+  // Collecter tous les DN du lot (fusion des zones)
+  const allDN=new Set();
+  loc.zones.forEach(zn=>Object.keys(zn.dn).forEach(dn=>allDN.add(dn)));
+  const dns=[...allDN].sort((a,b)=>a-b);
+  // Prévu par DN (somme sur toutes les zones)
+  const prevuParDN={};
+  dns.forEach(dn=>{prevuParDN[dn]=0;});
+  loc.zones.forEach(zn=>Object.keys(zn.dn).forEach(dn=>{prevuParDN[dn]+=zn.dn[dn];}));
+  const prevuTotal=loc.tot;
+  // Production par mois et par DN pour l'activité choisie
+  const prodParMoisDN={}; // {mois: {DN: val}}
+  mKeys.forEach(m=>{prodParMoisDN[m]={};dns.forEach(dn=>{prodParMoisDN[m][dn]=0;});});
+  dbDates().sort().forEach(d=>{
+    const m=d.slice(0,7);
+    if(!mKeys.includes(m))return;
+    const rp=db[d];if(!rp?.loc?.[loc.id])return;
+    loc.zones.forEach(zn=>{
+      const ez=rp.loc[loc.id].zones?.[zn.zid];if(!ez)return;
+      Object.keys(zn.dn).forEach(dn=>{
+        prodParMoisDN[m][dn]+=(+ez[dn]?.[act]||0);
+      });
+    });
+  });
+  // Construction du HTML
+  let h=`<div style="margin-top:14px;padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid ${clr};border-radius:8px;animation:slideDown .25s ease-out">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+      <div style="font-size:14px;font-weight:600;color:#0f1b2d">
+        📍 ${loc.nm} — Détail ${actLbl} par DN${loc.zones.length>1?' <span style="font-size:10px;color:#8a95a5;font-weight:400">(toutes zones fusionnées)</span>':''}
+      </div>
+      <button style="font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer;background:#fff;color:#5a6778;border:1px solid #dce1e9" onclick="DG_LOC_DETAIL=null;draw()">✕ Fermer</button>
+    </div>
+    <div style="overflow-x:auto"><table class="tb"><thead><tr>
+      <th>Mois</th>
+      ${dns.map(dn=>`<th class="nr" style="font-size:10px"><span class="dntg" style="background:${DN_CLR[dn]||'#8a95a5'}15;color:${DN_CLR[dn]||'#8a95a5'};border:1px solid ${DN_CLR[dn]||'#8a95a5'}44">DN ${dn}</span></th>`).join('')}
+      <th class="nr">Total mois</th>
+    </tr></thead><tbody>`;
+  // Lignes mois
+  const totParDN={};dns.forEach(dn=>{totParDN[dn]=0;});
+  mKeys.forEach(m=>{
+    let totMois=0;
+    h+=`<tr><td style="font-weight:600">${moisNm(m)}</td>`;
+    dns.forEach(dn=>{
+      const v=prodParMoisDN[m][dn]||0;
+      totParDN[dn]+=v;totMois+=v;
+      h+=`<td class="nr" style="${v>0?'color:'+clr+';font-weight:500':'color:#b8c2cc'}">${v>0?fmt(Math.round(v)):'—'}</td>`;
+    });
+    h+=`<td class="nr" style="font-weight:600;color:${clr}">${totMois>0?fmt(Math.round(totMois)):'—'}</td></tr>`;
+  });
+  // Ligne TOTAL réalisé
+  h+=`<tr style="font-weight:700;border-top:2px solid #cbd5e1;background:#e2e8f0"><td>TOTAL RÉALISÉ</td>`;
+  let totRealise=0;
+  dns.forEach(dn=>{
+    const v=totParDN[dn];totRealise+=v;
+    h+=`<td class="nr" style="color:${clr}">${v>0?fmt(Math.round(v)):'—'}</td>`;
+  });
+  h+=`<td class="nr" style="color:${clr}">${fmt(Math.round(totRealise))}</td></tr>`;
+  // Ligne PRÉVU
+  h+=`<tr style="font-size:11px;background:#f1f5f9;color:#5a6778"><td>Prévu</td>`;
+  dns.forEach(dn=>{
+    h+=`<td class="nr">${fmt(prevuParDN[dn])}</td>`;
+  });
+  h+=`<td class="nr">${fmt(prevuTotal)}</td></tr>`;
+  // Ligne AVANCEMENT %
+  h+=`<tr style="font-size:11px;background:#f8fafc;font-weight:600"><td>Avancement</td>`;
+  dns.forEach(dn=>{
+    const pct=prevuParDN[dn]>0?(totParDN[dn]/prevuParDN[dn])*100:0;
+    h+=`<td class="nr" style="color:${pct>0?cP(pct):'#b8c2cc'}">${pct>0?pct.toFixed(1)+'%':'—'}</td>`;
+  });
+  const pctTot=prevuTotal>0?(totRealise/prevuTotal)*100:0;
+  h+=`<td class="nr" style="color:${cP(pctTot)}">${pctTot.toFixed(1)}%</td></tr>`;
+  h+=`</tbody></table></div>
+    <div style="font-size:10px;color:#8a95a5;margin-top:8px;font-style:italic">💡 Changez l'activité (boutons ci-dessus) pour voir le détail sur Soudure/Fouille/Remblai/Essai.</div>
+  </div>`;
+  return h;
+}
+
+function pgDG(){
+  let cu=cumul('9999-12-31');
+  if(safeMode)cu=safeCumul(cu);
+  const months=groupByMonth();
+  const mKeys=Object.keys(months).sort();
+  const tP=LOC.reduce((s,l)=>s+l.tot,0);
+  const tS=LOC.reduce((s,l)=>s+cu[l.id].s,0),tF=LOC.reduce((s,l)=>s+cu[l.id].f,0),tR=LOC.reduce((s,l)=>s+cu[l.id].r,0);
+  // Bardage + Essai cumulés total
+  let tBar=0,tEss=0;
+  LOC.forEach(l=>{l.zones.forEach(zn=>{Object.keys(zn.dn).forEach(dn=>{
+    tBar+=(cu[l.id].zones[zn.zid].dn[dn]?.bar||0);
+    tEss+=(cu[l.id].zones[zn.zid].dn[dn]?.ess||0);
+  });});});
+  // Regards : cumul réalisés + total
+  let tGcFait=0,tGcTotal=0;
+  LOC.forEach(l=>{if(l.regards>0){tGcTotal+=l.regards;tGcFait+=Math.min(cu[l.id].gc||0,l.regards);}});
+  // Avancement global PONDÉRÉ
+  const avGlobal=avancementGlobal(cu).toFixed(1);
+  const nRapports=dbDates().length;
+  const dernierRpt=dbDates().sort().pop();
+
+  let h=`<div class="mn">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+      <div class="st" style="margin:0">Tableau de bord</div>
+      <div class="no-print" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="bs" onclick="exportDGpdf()" style="font-size:12px" title="Astuce : dans la boîte d'impression, choisir l'orientation (Portrait/Paysage) dans 'Plus de paramètres' > 'Disposition'">🖨️ Export PDF</button>
+        <button class="bs" onclick="exportExcelCumul()" style="font-size:12px">📊 Export Excel</button>
+        <button class="bp" onclick="exportComplet()" style="font-size:12px" title="Exporte toutes les données du projet en JSON pour archivage ou partage">💾 Export complet</button>
+      </div>
+    </div>
+    <div style="font-size:11px;color:#8a95a5;margin:2px 0 16px 14px">Projet AEP Kimoukro — Dispersion 1B · ${dernierRpt?'Données au '+fD(dernierRpt):'Aucune donnée'} · ${nRapports} rapports · Pondération : imp+bar+soud×2+fou×2+rem×2+ess/2+gc/2+rec/2</div>`;
+
+  // ── 1. Synthèse générale (2 lignes : activités puis indicateurs) ──
+  // Ligne 1 : Linéaire + activités (bardage, soudure, fouille, remblai, essai)
+  h+=`<div class="kr">
+    <div class="kc" style="border-left:4px solid #2c7be5"><div class="kl">Linéaire prévu</div><div class="kv">${fmt(tP)}<span class="ku">ml</span></div></div>
+    <div class="kc" style="border-left:4px solid #6366f1"><div class="kl">Bardage cumulé</div><div class="kv">${fmt(Math.round(tBar))}<span class="ku">ml</span></div><span class="kb ${bC(Math.min(pc(tBar,tP),100))}">${Math.min(pc(tBar,tP),100).toFixed(1)}%</span></div>
+    <div class="kc" style="border-left:4px solid #2c7be5"><div class="kl">Soudure cumulée</div><div class="kv">${fmt(tS)}<span class="ku">ml</span></div><span class="kb ${bC(pc(tS,tP))}">${pcS(tS,tP)}</span></div>
+    <div class="kc" style="border-left:4px solid #f5a623"><div class="kl">Fouille cumulée</div><div class="kv">${fmt(tF)}<span class="ku">ml</span></div><span class="kb ${bC(pc(tF,tP))}">${pcS(tF,tP)}</span></div>
+    <div class="kc" style="border-left:4px solid #36b37e"><div class="kl">Remblai cumulé</div><div class="kv">${fmt(tR)}<span class="ku">ml</span></div><span class="kb ${bC(pc(tR,tP))}">${pcS(tR,tP)}</span></div>
+    <div class="kc" style="border-left:4px solid #e74c3c"><div class="kl">Essai cumulé</div><div class="kv">${fmt(Math.round(tEss))}<span class="ku">ml</span></div><span class="kb ${bC(pc(tEss,tP))}">${pcS(tEss,tP)}</span></div>
+    <div class="kc" style="border-left:4px solid #0b7285"><div class="kl">Regards réalisés</div><div class="kv">${tGcFait}<span class="ku">/ ${tGcTotal}</span></div><span class="kb ${bC(tGcTotal>0?(tGcFait/tGcTotal)*100:0)}">${tGcTotal>0?((tGcFait/tGcTotal)*100).toFixed(1)+'%':'—'}</span></div>
+    <div class="kc" style="border-left:4px solid #0f1b2d;background:linear-gradient(135deg,#0f1b2d,#243b5c)"><div class="kl" style="color:rgba(255,255,255,.6)">Avancement global</div><div class="kv" style="color:#fff;font-size:28px">${avGlobal}<span class="ku" style="color:rgba(255,255,255,.5)">%</span></div><div class="ksb" style="color:rgba(255,255,255,.4)">Pondéré toutes activités</div></div>
+  </div>`;
+
+  // ── 1bis. Bloc Pilotage (B1, B2, B4) ──
+  const proj=projectionFin();
+  const eco=ecartObjectif();
+  const tdc=tendance7j();
+  const dateFinObj=new Date(DATE_FIN_OBJECTIF);
+  let retardFin=null,alerteFin='';
+  if(proj.date){
+    const dFin=new Date(proj.date);
+    const diffJ=Math.round((dFin-dateFinObj)/86400000);
+    retardFin=diffJ;
+    if(diffJ<=0)alerteFin='bg';else if(diffJ<=15)alerteFin='bo';else alerteFin='br';
+  }
+  const tdcClr=tdc.acceleration>0.1?'#36b37e':tdc.acceleration<-0.1?'#e74c3c':'#5a6778';
+  const tdcBg=tdc.acceleration>0.1?'bg':tdc.acceleration<-0.1?'br':'bo';
+  
+  h+=`<div class="st">Pilotage & projection</div>`;
+  
+  // Flag retard critique (B2) — bandeau d'alerte si écart > seuil
+  if(eco.critique){
+    h+=`<div class="alert-box" style="border-color:#e74c3c;background:#fff5f5">
+      <div class="alert-header">🚨 Retard critique détecté — Écart > ${SEUIL_RETARD_CRITIQUE}%</div>
+      <div class="alert-body">
+        <b>Objectif à date :</b> ${eco.pcObjectif}% · <b>Réalisé :</b> ${eco.pcReel}% · <b>Écart :</b> ${eco.ecart} points
+      </div>
+    </div>`;
+  }
+  
+  // ── LOGIQUE BADGE COHÉRENTE (écart + projection combinés) ──
+  // Calcul du statut global : on ne peut pas être "Dans les clous" si la projection dépasse la date objectif
+  // Règles (priorité décroissante) :
+  //  1. Retard critique : écart > 15 pts → rouge 🚨
+  //  2. Retard modéré : écart > 5 pts → orange ⚠️
+  //  3. Retard à terme : écart OK mais projection > date objectif → orange ⚠️
+  //  4. En avance : écart < -5 pts ET projection ≤ date objectif → vert ✓
+  //  5. Dans les clous : sinon → vert ✓
+  let badgeEcart='';
+  if(eco.critique){
+    badgeEcart='<span class="kb br">🚨 Retard critique</span>';
+  } else if(eco.ecart>5){
+    badgeEcart='<span class="kb bo">⚠️ Retard modéré</span>';
+  } else if(retardFin!==null&&retardFin>0){
+    // Écart instantané OK, mais projection en retard → alerte à terme
+    badgeEcart='<span class="kb bo">⚠️ Retard à terme</span>';
+  } else if(eco.ecart<-5){
+    badgeEcart='<span class="kb bg">✓ En avance</span>';
+  } else {
+    badgeEcart='<span class="kb bg">✓ Dans les clous</span>';
+  }
+  // Couleur de la bordure gauche de la carte écart cohérente avec le badge
+  const ecartBorder=eco.critique?'#e74c3c':(eco.ecart>5||(retardFin!==null&&retardFin>0))?'#f5a623':'#36b37e';
+  
+  h+=`<div class="kr" style="margin-bottom:16px">
+    <div class="kc" style="border-left:4px solid ${ecartBorder}">
+      <div class="kl">Écart vs objectif</div>
+      <div class="kv" style="color:${eco.critique?'#e74c3c':eco.ecart<=0?'#36b37e':'#f5a623'}">${eco.ecart<=0?'+':'−'}${Math.abs(eco.ecart).toFixed(1)}<span class="ku">pts</span></div>
+      <div class="ksb">Objectif au ${eco.dateRef?fD(eco.dateRef):'—'}: ${eco.pcObjectif}% · Réel: ${eco.pcReel}%</div>
+      ${badgeEcart}
+    </div>
+    <div class="kc" style="border-left:4px solid ${retardFin!==null&&retardFin>0?'#e74c3c':'#2c7be5'}">
+      <div class="kl">Projection fin de chantier</div>
+      ${proj.termine?'<div class="kv" style="color:#36b37e;font-size:16px">✅ Terminé</div>':
+        proj.noCadence?'<div class="kv" style="font-size:14px;color:#8a95a5">—</div><div class="ksb">Cadence insuffisante</div>':
+        `<div class="kv" style="font-size:18px">${fD(proj.date)}</div>
+         <div class="ksb">${proj.joursRestants} j · cadence ${proj.cadencePts.toFixed(2)} pts/j · reste ${proj.reste.toFixed(1)} pts</div>`}
+      ${retardFin!==null?`<span class="kb ${alerteFin}">${retardFin<=0?'✓ Dans les délais':retardFin+' j de retard'}</span>`:''}
+    </div>
+    <div class="kc" style="border-left:4px solid ${tdcClr}">
+      <div class="kl">Tendance 7 jours</div>
+      <div class="kv" style="color:${tdcClr}">${tdc.evolution} ${tdc.acceleration>=0?'+':''}${tdc.acceleration.toFixed(2)}<span class="ku">pts</span></div>
+      <div class="ksb">+${tdc.delta7j.toFixed(2)} pts (7j) vs +${tdc.delta7j14.toFixed(2)} pts (j-14 → j-7)</div>
+      <span class="kb ${tdcBg}">${tdc.acceleration>0.1?'Accélération':tdc.acceleration<-0.1?'Ralentissement':'Stable'}</span>
+    </div>
+    <div class="kc" style="border-left:4px solid #f5a623">
+      <div class="kl">Objectif fin de chantier</div>
+      <div class="kv" style="font-size:18px">${fD(DATE_FIN_OBJECTIF)}</div>
+      <div class="ksb">Incluant marge de réception</div>
+    </div>
+  </div>`;
+
+  // ── 1ter. Carte Aléas chantier (synthèse) ──
+  h+=renderAleasCard();
+
+  // ── 2. Évolution mensuelle (pivot par localité + courbe d'avancement) ──
+  const actLabels={s:'Soudure',f:'Fouille',r:'Remblai',ess:'Essai'};
+  const actColors={s:'#2c7be5',f:'#f5a623',r:'#36b37e',ess:'#e74c3c'};
+  // Calculer la production par mois et par localité pour l'activité sélectionnée
+  const prodParMoisLoc={};
+  LOC.forEach(l=>{prodParMoisLoc[l.id]={};});
+  dbDates().sort().forEach(d=>{
+    const m=d.slice(0,7);
+    const rp=db[d];if(!rp?.loc)return;
+    LOC.forEach(l=>{
+      if(!prodParMoisLoc[l.id][m])prodParMoisLoc[l.id][m]=0;
+      l.zones.forEach(zn=>{
+        const ez=rp.loc[l.id]?.zones?.[zn.zid];if(!ez)return;
+        Object.keys(zn.dn).forEach(dn=>{
+          prodParMoisLoc[l.id][m]+=(+ez[dn]?.[DG_ACT_PIVOT]||0);
+        });
+      });
+    });
+  });
+  
+  h+=`<div class="st">Évolution mensuelle</div>
+  <div class="cd"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+    <div class="ct" style="margin:0"><span class="dt" style="background:${actColors[DG_ACT_PIVOT]}"></span> Production mensuelle par localité — ${actLabels[DG_ACT_PIVOT]} (ml)</div>
+    <div style="display:flex;gap:4px">
+      ${Object.keys(actLabels).map(k=>{
+        const isActive=DG_ACT_PIVOT===k;
+        const styleInactive='background:#f0f4f8;color:#5a6778;border:1px solid #dce1e9';
+        const styleActive='background:#2c7be5;color:#fff;border:1px solid #2c7be5;box-shadow:0 2px 4px rgba(44,123,229,.2)';
+        return `<button style="font-size:11px;padding:5px 12px;border-radius:6px;cursor:pointer;font-weight:500;transition:all .15s;${isActive?styleActive:styleInactive}" onmouseover="if(!${isActive})this.style.background='#dce1e9'" onmouseout="if(!${isActive})this.style.background='#f0f4f8'" onclick="DG_ACT_PIVOT='${k}';draw()">${actLabels[k]}</button>`;
+      }).join('')}
+    </div>
+  </div>
+  <div style="overflow-x:auto"><table class="tb"><thead><tr>
+    <th>Mois</th>
+    ${LOC.map(l=>{
+      const isActive=DG_LOC_DETAIL===l.id;
+      return `<th class="nr" style="font-size:9px;cursor:pointer;user-select:none;${isActive?'background:#e8f0fe;color:#2c7be5':''}" onclick="DG_LOC_DETAIL=(DG_LOC_DETAIL==='${l.id}'?null:'${l.id}');draw();setTimeout(()=>{const el=document.getElementById('loc-detail-anchor');if(el)el.scrollIntoView({behavior:'smooth',block:'start'});},100)" title="Cliquez pour voir le détail de ${l.nm}">${l.nm.slice(0,8)}${isActive?' ▼':''}</th>`;
+    }).join('')}
+    <th class="nr">Total</th>
+  </tr></thead><tbody>`;
+  const totParLoc={};LOC.forEach(l=>{totParLoc[l.id]=0;});
+  let totGlobalPivot=0;
+  mKeys.forEach(m=>{
+    let totMois=0;
+    h+=`<tr><td style="font-weight:600">${moisNm(m)}</td>`;
+    LOC.forEach(l=>{
+      const v=prodParMoisLoc[l.id][m]||0;
+      totParLoc[l.id]+=v;totMois+=v;
+      h+=`<td class="nr" style="${v>0?'color:'+actColors[DG_ACT_PIVOT]+';font-weight:500':'color:#b8c2cc'}">${v>0?fmt(Math.round(v)):'—'}</td>`;
+    });
+    h+=`<td class="nr" style="font-weight:600;color:${actColors[DG_ACT_PIVOT]}">${totMois>0?fmt(Math.round(totMois)):'—'}</td></tr>`;
+    totGlobalPivot+=totMois;
+  });
+  // Ligne total
+  h+=`<tr style="font-weight:700;border-top:2px solid #dce1e9;background:#f0f4f8"><td>TOTAL</td>`;
+  LOC.forEach(l=>{
+    const v=totParLoc[l.id];
+    const pct=l.tot>0?(v/l.tot)*100:0;
+    h+=`<td class="nr" style="color:${actColors[DG_ACT_PIVOT]}">${v>0?fmt(Math.round(v)):'—'}<div style="font-size:9px;color:#8a95a5;font-weight:400">${pct>0?pct.toFixed(0)+'%':''}</div></td>`;
+  });
+  h+=`<td class="nr" style="color:${actColors[DG_ACT_PIVOT]}">${fmt(Math.round(totGlobalPivot))}</td></tr>`;
+  h+=`</tbody></table></div>
+    <div style="font-size:10px;color:#8a95a5;margin-top:6px;font-style:italic">💡 Cliquez sur une activité pour voir son détail mensuel par localité. Cliquez sur le nom d'une localité pour un détail par DN.</div>
+    <div id="loc-detail-anchor"></div>
+    ${renderLocDetail(cu,mKeys,actLabels,actColors)}
+    <div class="ct" style="margin-top:20px"><span class="dt" style="background:#36b37e"></span> Courbe d'avancement — Réel vs Objectif</div>
+    <div class="ch" style="height:300px"><canvas id="chDGcurve"></canvas></div>
+  </div>`;
+
+  // ── 3. Performance par lot (avancement pondéré) ──
+  const retards=retardParLot(cu);
+  h+=`<div class="st">Performance par lot</div>
+    <div class="cd"><div style="overflow-x:auto"><table class="tb"><thead><tr><th>Lot</th><th>Localité</th><th>Zone</th><th class="nr">Prévu</th><th class="nr">Bar</th><th class="nr">Soud</th><th class="nr">Fou</th><th class="nr">Rem</th><th class="nr">Ess</th><th class="nr">GC</th><th>Avancement pondéré</th><th class="nr">Retard</th></tr></thead><tbody>`;
+  LOC.forEach((l,i)=>{
+    const c=cu[l.id];
+    const a=avancementLot(l,c);
+    const ret=retards[l.id];
+    let retCell='<span style="color:#b8c2cc">—</span>';
+    if(ret){
+      if(ret.avance)retCell='<span class="kb bg" style="font-size:10px">✓ À jour</span>';
+      else if(ret.jours===0)retCell='<span class="kb bg" style="font-size:10px">0 j</span>';
+      else{
+        const cl=ret.jours<=7?'bo':'br';
+        retCell=`<span class="kb ${cl}" style="font-size:10px">${ret.jours} j</span><div style="font-size:9px;color:#8a95a5;margin-top:2px">${fmt(ret.ml)} ml</div>`;
+      }
+    }
+    // Linéaires réels par activité (en ml)
+    // bar/ess : calculés à partir des DN, soud/fou/rem : déjà dans cu
+    let lBar=0,lEss=0;
+    l.zones.forEach(zn=>{Object.keys(zn.dn).forEach(dn=>{
+      lBar+=(c.zones[zn.zid].dn[dn]?.bar||0);
+      lEss+=(c.zones[zn.zid].dn[dn]?.ess||0);
+    });});
+    // Formatage : ml en couleur selon avancement (reprend la logique cP)
+    const mlCell=(val,pct)=>val===0?'<span style="color:#b8c2cc">—</span>':`<span style="color:${cP(pct)};font-family:'JetBrains Mono',monospace;font-size:10px">${fmt(Math.round(val))}</span>`;
+    // Compter les aléas actifs sur cette localité
+    const aleasLot=getAleas().filter(a=>(a.localite===l.id||a.localite==='tous')&&a.statut!=='resolu').length;
+    const badgeAlea=aleasLot>0?`<div style="font-size:9px;color:#f5a623;font-weight:600;margin-top:2px">⚠️ ${aleasLot} aléa${aleasLot>1?'s':''} actif${aleasLot>1?'s':''}</div>`:'';
+    h+=`<tr><td style="font-weight:600">Lot ${i+1}</td><td style="font-weight:600">${l.nm}${badgeAlea}</td>
+      <td><span class="kb ${l.z==='Ouest'?'bbl':'bg'}" style="font-size:10px">${l.z}</span></td>
+      <td class="nr">${fmt(l.tot)}</td>
+      <td class="nr">${mlCell(lBar,a.detail.bar)}</td>
+      <td class="nr">${mlCell(c.s,a.detail.soud)}</td>
+      <td class="nr">${mlCell(c.f,a.detail.fou)}</td>
+      <td class="nr">${mlCell(c.r,a.detail.rem)}</td>
+      <td class="nr">${mlCell(lEss,a.detail.ess)}</td>
+      <td class="nr">${l.regards>0?`<span style="color:${cP(a.detail.gc)};font-family:'JetBrains Mono',monospace;font-size:10px">${c.gc||0}/${l.regards}</span>`:'<span style="color:#b8c2cc;font-size:10px">N/A</span>'}</td>
+      <td>${bar(a.pc)}</td>
+      <td class="nr">${retCell}</td></tr>`;});
+  h+=`</tbody></table></div>
+    <div style="font-size:10px;color:#8a95a5;margin-top:6px;font-style:italic">💡 Bar/Soud/Fou/Rem/Ess en ml réalisés (couleur = niveau d'avancement). GC = regards réalisés/total. Colonne "Avancement pondéré" = moyenne pondérée.</div>
+    </div>`;
+
+  // ── 4. Synthèse par zone ──
+  h+=`<div class="st">Synthèse par zone</div><div class="g2">`;
+  ZN.forEach(zone=>{
+    const locs=LOC.filter(l=>l.z===zone);
+    const zP=locs.reduce((s,l)=>s+l.tot,0);
+    const zS=locs.reduce((s,l)=>s+cu[l.id].s,0);
+    const zF=locs.reduce((s,l)=>s+cu[l.id].f,0);
+    const zR=locs.reduce((s,l)=>s+cu[l.id].r,0);
+    // Essai cumulé par zone (somme des essais par DN)
+    let zEss=0;
+    locs.forEach(l=>{l.zones.forEach(zn=>{Object.keys(zn.dn).forEach(dn=>{
+      zEss+=(cu[l.id].zones[zn.zid].dn[dn]?.ess||0);
+    });});});
+    // Regards par zone : prévus et réalisés
+    const zRegPrevu=locs.reduce((s,l)=>s+(l.regards||0),0);
+    const zRegFait=locs.reduce((s,l)=>s+(cu[l.id].gc||0),0);
+    // Avancement pondéré par zone (moyenne pondérée par linéaire)
+    let zAvPond=0;
+    locs.forEach(l=>{const a=avancementLot(l,cu[l.id]);zAvPond+=a.pc*(l.tot/zP);});
+    const zAv=zAvPond.toFixed(1);
+    const clr=zone==='Ouest'?'#2c7be5':'#00b8d9';
+    // Top/retard selon avancement pondéré par lot
+    const avParLot={};locs.forEach(l=>{avParLot[l.id]=avancementLot(l,cu[l.id]).pc;});
+    const best=locs.reduce((b,l)=>avParLot[l.id]>avParLot[b.id]?l:b);
+    const worst=locs.reduce((w,l)=>avParLot[l.id]<avParLot[w.id]?l:w);
+    const pctRegards=zRegPrevu>0?pc(zRegFait,zRegPrevu):0;
+    h+=`<div class="cd" style="border-top:4px solid ${clr}">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="font-size:16px;font-weight:700;color:#0f1b2d">Zone ${zone}</div>
+        <div style="font-size:28px;font-weight:700;color:${cP(+zAv)}">${zAv}%</div>
+      </div>
+      <div style="font-size:12px;color:#5a6778;margin-bottom:10px">${locs.length} localités · ${fmt(zP)} ml prévus</div>
+      <div class="kr" style="margin-bottom:8px">
+        <div class="kc"><div class="kl">Soudure</div><div class="kv" style="font-size:16px">${fmt(zS)}</div>${bar(pc(zS,zP))}</div>
+        <div class="kc"><div class="kl">Fouille</div><div class="kv" style="font-size:16px">${fmt(zF)}</div>${bar(pc(zF,zP))}</div>
+        <div class="kc"><div class="kl">Remblai</div><div class="kv" style="font-size:16px">${fmt(zR)}</div>${bar(pc(zR,zP))}</div>
+      </div>
+      <div class="kr" style="margin-bottom:8px">
+        <div class="kc"><div class="kl">Essai</div><div class="kv" style="font-size:16px">${fmt(Math.round(zEss))}</div>${bar(pc(zEss,zP))}</div>
+        <div class="kc"><div class="kl">Regards</div><div class="kv" style="font-size:16px">${zRegFait} <span style="font-size:11px;color:#8a95a5;font-weight:400">/ ${zRegPrevu}</span></div>${zRegPrevu>0?bar(pctRegards):'<div style="font-size:10px;color:#b8c2cc">N/A</div>'}</div>
+      </div>
+      <div style="font-size:11px;color:#8a95a5">Top : <b>${best.nm}</b> (${avParLot[best.id].toFixed(1)}%) · Retard : <b>${worst.nm}</b> (${avParLot[worst.id].toFixed(1)}%)</div>
+    </div>`;});
+  h+=`</div>`;
+
+  // Safe mode toggle
+  const alerts=checkCoherence(cumul('9999-12-31'));
+  if(alerts.length){
+    h+=`<div style="display:flex;align-items:center;gap:10px;margin-top:16px">
+      <label style="font-size:12px;color:#5a6778;display:flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="checkbox" ${safeMode?'checked':''} onchange="safeMode=this.checked;draw()" style="width:16px;height:16px">
+        🛡️ Mode sécurisé
+      </label>${safeMode?'<span class="kb bg" style="font-size:10px">Actif</span>':''}
+    </div>`;}
+
+  h+=`</div>`;
+  return h;
+}
+
+function mkDGCharts(){
+  let cu=cumul('9999-12-31');
+  if(safeMode)cu=safeCumul(cu);
+  const months=groupByMonth();
+  const mKeys=Object.keys(months).sort();
+  const tP=LOC.reduce((s,l)=>s+l.tot,0);
+
+  // Chart 1: Courbe Réel vs Objectif planifié
+  const el1=document.getElementById('chDGcurve');
+  if(el1){
+    // Axe étendu couvrant toute la fenêtre du planning recalé (Jan 2026 → Juil 2026)
+    // + décembre 2025 comme point de départ à 0% (début officiel planning d'origine)
+    const allMonths=new Set([...mKeys]);
+    // Fenêtre recalée (doit matcher buildPlannedCurve)
+    const planStart=new Date('2025-12-01'); // Point d'ancrage à 0%
+    const planEnd=new Date(DATE_FIN_OBJECTIF);
+    let d=new Date(planStart);
+    while(d<=planEnd){
+      allMonths.add(d.toISOString().slice(0,7));
+      d.setMonth(d.getMonth()+1);d.setDate(1);
+    }
+    const xMonths=[...allMonths].sort();
+    
+    // Courbe réelle: avancement pondéré cumulé à la fin de chaque mois
+    // - Avant la première saisie : 0% (point d'ancrage visuel, démarre bien à 0)
+    // - Mois avec saisies : avancement pondéré réel
+    // - Après dernier mois saisi : null (pas de ligne vers le futur)
+    const premierMoisSaisi=mKeys[0]; // Plus petit mois contenant des données
+    const dernierMoisSaisi=mKeys[mKeys.length-1];
+    const reelData=xMonths.map(m=>{
+      // Mois strictement avant les premières saisies → 0% (démarrage propre)
+      if(!premierMoisSaisi||m<premierMoisSaisi)return 0;
+      // Mois strictement après les dernières saisies → null (ligne s'arrête)
+      if(m>dernierMoisSaisi)return null;
+      // Mois courant : calculer l'avancement pondéré cumulé à fin de mois
+      const[yy,mm]=m.split('-').map(Number);
+      const finMois=new Date(yy,mm,0).toISOString().slice(0,10);
+      const cuM=cumul(finMois);
+      return +avancementGlobal(cuM).toFixed(1);
+    });
+    // Courbe objectif: issue du planning opérationnel
+    const objData=buildPlannedCurve(xMonths);
+    
+    charts.push(new Chart(el1,{type:'line',data:{
+      labels:xMonths.map(m=>{const p=moisNm(m).split(' ');return p[0].slice(0,4)+'. '+p[1];}),
+      datasets:[
+        {label:'Réel (pondéré)',data:reelData,
+          borderColor:'#36b37e',backgroundColor:'#36b37e22',fill:true,spanGaps:false,
+          pointBackgroundColor:'#36b37e',pointRadius:6,pointHoverRadius:8,
+          borderWidth:3,tension:0.3},
+        {label:'Objectif planifié',data:objData,
+          borderColor:'#e74c3c',backgroundColor:'transparent',fill:false,
+          pointBackgroundColor:'#e74c3c',pointRadius:5,pointHoverRadius:7,
+          borderWidth:2,borderDash:[8,4],tension:0.1},
+      ]
+    },options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{position:'top',labels:{font:{family:'DM Sans',size:12},boxWidth:14,usePointStyle:true}},
+        tooltip:{callbacks:{label:c=>c.dataset.label+': '+c.parsed.y+'%'}}},
+      scales:{y:{min:0,max:110,ticks:{callback:v=>v+'%',font:{family:'JetBrains Mono',size:10}},grid:{color:'#eef1f6'}},
+        x:{grid:{display:false},ticks:{font:{family:'DM Sans',size:11}}}}
+    }}));
+  }
+}
+
+// ── EXPORTS (D1, D2) ──
+
+// D1: Export PDF vue DG via window.print()
+function exportDGpdf(){
+  if(V!=='dg'&&V!=='home'){toast('⚠️ Aller d\'abord sur le Tableau de bord');return;}
+  document.body.classList.add('print-dg');
+  setTimeout(()=>{
+    window.print();
+    setTimeout(()=>document.body.classList.remove('print-dg'),500);
+  },200);
+}
+window.exportDGpdf=exportDGpdf;
+
+// D2: Export Excel cumul détaillé format attachement quantitatif
+function exportExcelCumul(){
+  let cu=cumul('9999-12-31');
+  if(safeMode)cu=safeCumul(cu);
+  
+  // ═══════ ONGLET 1 : Cumul détaillé par DN ═══════
+  const rows=[];
+  rows.push(['PROJET AEP KIMOUKRO — DISPERSION 1B']);
+  rows.push(['Attachement quantitatif — Cumul au '+fD(today())]);
+  rows.push([]);
+  rows.push(['Lot','Localité','Zone','Sous-zone','DN','Prévu (ml)',
+    'Bardage (ml)','% Bar',
+    'Soudure (ml)','% Soud',
+    'Fouille (ml)','% Fou',
+    'Remblai (ml)','% Rem',
+    'Essai (ml)','% Ess']);
+  
+  let tP=0,tB=0,tS=0,tF=0,tR=0,tE=0;
+  LOC.forEach((l,i)=>{
+    const c=cu[l.id];
+    let lB=0,lE=0;
+    l.zones.forEach(zn=>{Object.keys(zn.dn).forEach(dn=>{
+      lB+=(c.zones[zn.zid].dn[dn]?.bar||0);
+      lE+=(c.zones[zn.zid].dn[dn]?.ess||0);
+    });});
+    tP+=l.tot;tB+=lB;tS+=c.s;tF+=c.f;tR+=c.r;tE+=lE;
+    const hasSubZ=l.zones.length>1||l.zones[0].zid!=='_';
+    // Ligne totale localité
+    rows.push([
+      'Lot '+(i+1),l.nm,l.z,hasSubZ?'TOTAL':'','—',l.tot,
+      Math.round(lB*10)/10,Math.min(pc(lB,l.tot),100)/100,
+      Math.round(c.s*10)/10,pc(c.s,l.tot)/100,
+      Math.round(c.f*10)/10,pc(c.f,l.tot)/100,
+      Math.round(c.r*10)/10,pc(c.r,l.tot)/100,
+      Math.round(lE*10)/10,pc(lE,l.tot)/100
+    ]);
+    // Détail par sous-zone et DN
+    l.zones.forEach(zn=>{
+      const zc=c.zones[zn.zid];
+      let znB=0,znE=0;
+      Object.keys(zn.dn).forEach(dn=>{znB+=(zc.dn[dn]?.bar||0);znE+=(zc.dn[dn]?.ess||0);});
+      if(hasSubZ){
+        const znP=zn.tot;
+        rows.push(['','','',zn.nm,'Total',znP,
+          Math.round(znB*10)/10,Math.min(pc(znB,znP),100)/100,
+          Math.round(zc.s*10)/10,pc(zc.s,znP)/100,
+          Math.round(zc.f*10)/10,pc(zc.f,znP)/100,
+          Math.round(zc.r*10)/10,pc(zc.r,znP)/100,
+          Math.round(znE*10)/10,pc(znE,znP)/100]);
+      }
+      Object.keys(zn.dn).sort((a,b)=>a-b).forEach(dn=>{
+        const p=zn.dn[dn];
+        const dc=zc.dn[dn]||{s:0,f:0,r:0,bar:0,ess:0};
+        rows.push(['','','',hasSubZ?zn.nm:'','DN '+dn,p,
+          Math.round((dc.bar||0)*10)/10,Math.min(pc(dc.bar||0,p),100)/100,
+          Math.round(dc.s*10)/10,pc(dc.s,p)/100,
+          Math.round(dc.f*10)/10,pc(dc.f,p)/100,
+          Math.round(dc.r*10)/10,pc(dc.r,p)/100,
+          Math.round((dc.ess||0)*10)/10,pc(dc.ess||0,p)/100]);
+      });
+    });
+  });
+  // Totaux par zone
+  rows.push([]);
+  ZN.forEach(zone=>{
+    const locs=LOC.filter(l=>l.z===zone);
+    const zP=locs.reduce((s,l)=>s+l.tot,0);
+    const zS=locs.reduce((s,l)=>s+cu[l.id].s,0);
+    const zF=locs.reduce((s,l)=>s+cu[l.id].f,0);
+    const zR=locs.reduce((s,l)=>s+cu[l.id].r,0);
+    let zB=0,zE=0;
+    locs.forEach(l=>{l.zones.forEach(zn=>{Object.keys(zn.dn).forEach(dn=>{zB+=(cu[l.id].zones[zn.zid].dn[dn]?.bar||0);zE+=(cu[l.id].zones[zn.zid].dn[dn]?.ess||0);});});});
+    rows.push(['','TOTAL ZONE '+zone,zone,'','',zP,
+      Math.round(zB*10)/10,zP>0?Math.min(zB/zP,1):0,
+      Math.round(zS*10)/10,zP>0?zS/zP:0,
+      Math.round(zF*10)/10,zP>0?zF/zP:0,
+      Math.round(zR*10)/10,zP>0?zR/zP:0,
+      Math.round(zE*10)/10,zP>0?zE/zP:0]);
+  });
+  // Total général
+  rows.push(['','TOTAL GÉNÉRAL','','','',tP,
+    Math.round(tB*10)/10,tP>0?Math.min(tB/tP,1):0,
+    Math.round(tS*10)/10,tP>0?tS/tP:0,
+    Math.round(tF*10)/10,tP>0?tF/tP:0,
+    Math.round(tR*10)/10,tP>0?tR/tP:0,
+    Math.round(tE*10)/10,tP>0?tE/tP:0]);
+  
+  const ws=XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols']=[{wch:8},{wch:14},{wch:8},{wch:10},{wch:8},{wch:11},{wch:12},{wch:8},{wch:12},{wch:8},{wch:12},{wch:8},{wch:12},{wch:8},{wch:12},{wch:8}];
+  ws['!merges']=[
+    {s:{r:0,c:0},e:{r:0,c:15}},
+    {s:{r:1,c:0},e:{r:1,c:15}}
+  ];
+  // Format % sur les colonnes appropriées (7,9,11,13,15)
+  const range=XLSX.utils.decode_range(ws['!ref']);
+  for(let R=4;R<=range.e.r;R++){
+    [7,9,11,13,15].forEach(C=>{
+      const cellRef=XLSX.utils.encode_cell({r:R,c:C});
+      if(ws[cellRef]&&typeof ws[cellRef].v==='number'){ws[cellRef].z='0.0%';}
+    });
+  }
+  
+  // ═══════ ONGLET 2 : Synthèse pondérée par lot ═══════
+  const rows2=[];
+  rows2.push(['SYNTHÈSE PONDÉRÉE PAR LOT — AEP Kimoukro / Dispersion 1B']);
+  rows2.push(['Pondération: imp=1 · bar=1 · soud=2 · fou=2 · rem=2 · ess=0,5 · gc=0,5 · rec=0,5 (total 9 ou 9,5 selon regards)']);
+  rows2.push([]);
+  rows2.push(['Lot','Localité','Zone','Prévu (ml)','Coef lot',
+    '% Imp','% Bar','% Soud','% Fou','% Rem','% Ess','% GC','% Rec',
+    'Avancement pondéré']);
+  
+  LOC.forEach((l,i)=>{
+    const a=avancementLot(l,cu[l.id]);
+    rows2.push([
+      'Lot '+(i+1),l.nm,l.z,l.tot,coefLot(l),
+      a.detail.imp/100,a.detail.bar/100,a.detail.soud/100,a.detail.fou/100,a.detail.rem/100,
+      a.detail.ess/100,
+      l.regards>0?a.detail.gc/100:'N/A',
+      a.detail.rec/100,
+      a.pc/100
+    ]);
+  });
+  // Total zone + total général pondérés
+  rows2.push([]);
+  const tPglob=LOC.reduce((s,l)=>s+l.tot,0);
+  ZN.forEach(zone=>{
+    const locs=LOC.filter(l=>l.z===zone);
+    const zP=locs.reduce((s,l)=>s+l.tot,0);
+    let zAv=0;locs.forEach(l=>{zAv+=avancementLot(l,cu[l.id]).pc*(l.tot/zP);});
+    rows2.push(['','TOTAL ZONE '+zone,zone,zP,'','','','','','','','','',zAv/100]);
+  });
+  const avTot=avancementGlobal(cu);
+  rows2.push(['','TOTAL GÉNÉRAL','',tPglob,'','','','','','','','','',avTot/100]);
+  
+  const ws2=XLSX.utils.aoa_to_sheet(rows2);
+  ws2['!cols']=[{wch:8},{wch:14},{wch:8},{wch:10},{wch:8},
+    {wch:8},{wch:8},{wch:8},{wch:8},{wch:8},{wch:8},{wch:8},{wch:8},{wch:16}];
+  ws2['!merges']=[
+    {s:{r:0,c:0},e:{r:0,c:13}},
+    {s:{r:1,c:0},e:{r:1,c:13}}
+  ];
+  // Format % sur colonnes 5 à 13
+  const range2=XLSX.utils.decode_range(ws2['!ref']);
+  for(let R=4;R<=range2.e.r;R++){
+    [5,6,7,8,9,10,11,12,13].forEach(C=>{
+      const cellRef=XLSX.utils.encode_cell({r:R,c:C});
+      if(ws2[cellRef]&&typeof ws2[cellRef].v==='number'){ws2[cellRef].z='0.0%';}
+    });
+  }
+  
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Cumul détaillé');
+  XLSX.utils.book_append_sheet(wb,ws2,'Synthèse pondérée');
+  const fname='Cumul_Dispersion1B_'+today()+'.xlsx';
+  XLSX.writeFile(wb,fname);
+  toast('📊 Excel exporté : '+fname);
+}
+window.exportExcelCumul=exportExcelCumul;
+
+// ════════════════════════════════════════════════════════════
+// EXPORT COMPLET — Snapshot JSON pour archivage / partage
+// Usage : génère un fichier JSON contenant l'état complet du projet
+// (rapports journaliers, aléas, méta-données) à la date du jour.
+// Ce fichier peut être partagé pour reconstruire l'état projet ailleurs.
+// ════════════════════════════════════════════════════════════
+function exportComplet(){
+  const ds=dbDates().sort();
+  const aleas=getAleas();
+  const snapshot={
+    meta:{
+      projet:'AEP Kimoukro - Dispersion 1B',
+      contractant:'SUD SUD BTP - SIYO LIMITED',
+      client:'SGTM-CI',
+      moe:'John Cockerill',
+      genere_le:new Date().toISOString(),
+      genere_par:'Avancement Dispersion 1B (web app)',
+      version_app:'2026-04',
+      nb_rapports:ds.length,
+      premiere_date:ds[0]||null,
+      derniere_date:ds[ds.length-1]||null,
+      nb_aleas:aleas.length
+    },
+    parametres:{
+      DATE_FIN_OBJECTIF,
+      ETAT_INITIAL_DATE,
+      FENETRE_CADENCE_J,
+      SEUIL_RETARD_CRITIQUE,
+      ACTIV,
+      LOC:LOC.map(l=>({id:l.id,nm:l.nm,z:l.z,tot:l.tot,regards:l.regards,zones:l.zones}))
+    },
+    etat_initial:ETAT_INITIAL,
+    rapports_journaliers:{},
+    aleas:aleas
+  };
+  // Copier tous les rapports (sans les clés spéciales __aleas__)
+  ds.forEach(d=>{snapshot.rapports_journaliers[d]=db[d];});
+  
+  const json=JSON.stringify(snapshot,null,2);
+  const blob=new Blob([json],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  const fname=`Export_Dispersion1B_${today()}.json`;
+  a.href=url;a.download=fname;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  
+  // Calcul taille pour info
+  const sizeKB=(blob.size/1024).toFixed(1);
+  toast(`💾 Export complet : ${fname} (${sizeKB} Ko · ${ds.length} rapports · ${aleas.length} aléas)`);
+}
+window.exportComplet=exportComplet;
+
+
+// ── ATTACHEMENT QUANTITATIF ──
+// Calcule automatiquement le remblai cumulé par DN et par lot
+// Colonnes : Précédent (cumul fin mois-1), Mois (production mois), Cumul
+let attachMois=''; // YYYY-MM sélectionné
+
+function getAttachMonths(){
+  const ds=dbDates().sort();if(!ds.length)return[];
+  const mSet=new Set();ds.forEach(d=>mSet.add(d.slice(0,7)));
+  return[...mSet].sort();
+}
+
+function lastDayOfMonth(ym){
+  const[y,m]=ym.split('-').map(Number);
+  return new Date(y,m,0).getDate();
+}
+
+function pgAttachement(){
+  const months=getAttachMonths();
+  if(!attachMois&&months.length)attachMois=months[months.length-1];
+  
+  if(!months.length)return`<div class="mn"><div class="st">Attachement quantitatif</div><div class="cd" style="text-align:center;padding:40px">Aucune donnée disponible</div></div>`;
+
+  // Dates de clôture
+  const ym=attachMois;
+  const[yy,mm]=ym.split('-').map(Number);
+  const finMois=`${ym}-${String(lastDayOfMonth(ym)).padStart(2,'0')}`;
+  // Fin du mois précédent
+  const prevDate=new Date(yy,mm-1,0); // dernier jour mois-1
+  const finPrec=prevDate.toISOString().slice(0,10);
+  
+  // Numéro d'attachement (basé sur le mois : janvier=01, etc.)
+  const numAttach=String(mm).padStart(2,'0');
+  const moisNoms=['','Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+  const moisLabel=moisNoms[mm]+' '+yy;
+  
+  // Calcul des cumuls
+  const cuPrec=cumul(finPrec);
+  const cuCur=cumul(finMois);
+  
+  let h=`<div class="mn"><div class="st">Attachement quantitatif</div>
+    <div class="cd">
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:16px">
+        <div><label class="fl">Mois de l'attachement</label>
+          <select class="fi" style="width:200px" onchange="attachMois=this.value;draw()">
+            ${months.map(m=>`<option value="${m}" ${m===ym?'selected':''}>${moisNoms[+m.split('-')[1]]} ${m.split('-')[0]}</option>`).join('')}
+          </select>
+        </div>
+        <div style="font-size:13px;color:#5a6778;padding-top:18px">
+          Attachement N°${numAttach} — ${moisLabel}<br>
+          <span style="font-size:11px">Période : du 01/${numAttach}/${yy} au ${String(lastDayOfMonth(ym)).padStart(2,'0')}/${numAttach}/${yy}</span>
+        </div>
+      </div>
+    </div>`;
+
+  // Tableau par lot
+  LOC.forEach((l,idx)=>{
+    // Collect DN list for this lot (from all zones)
+    const dnSet=new Set();
+    l.zones.forEach(zn=>Object.keys(zn.dn).forEach(d=>dnSet.add(d)));
+    const dns=[...dnSet].sort((a,b)=>+b-+a); // 160, 110, 90, 63
+    
+    h+=`<div class="cd" style="margin-top:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div><span style="font-size:14px;font-weight:700;color:#0f1b2d">Lot ${idx+1} — ${l.nm}</span>
+          <span style="font-size:12px;color:#5a6778;margin-left:8px">(${fmt(l.tot)} ml)</span>
+          <span class="kb ${l.z==='Ouest'?'bbl':'bg'}" style="font-size:10px;margin-left:6px">${l.z}</span>
+        </div>
+        <button class="bsm" onclick="copyAttachLot('${l.id}','${ym}')" title="Copier les données">📋 Copier</button>
+      </div>
+      <div style="overflow-x:auto"><table class="tb" id="tbl_attach_${l.id}">
+        <thead><tr>
+          <th style="text-align:left">Désignation</th>
+          <th class="nr">Marché (ml)</th>
+          <th class="nr" style="background:#e8f4fd">Précédent</th>
+          <th class="nr" style="background:#fff4e5">Mois</th>
+          <th class="nr" style="background:#e0f7e9">Cumul</th>
+        </tr></thead><tbody>`;
+    
+    let totPrec=0,totMois=0,totCum=0,totMarche=0;
+    
+    dns.forEach(dn=>{
+      // Sum R across all zones for this DN
+      let rPrec=0,rCur=0,marche=0;
+      l.zones.forEach(zn=>{
+        if(zn.dn[dn]){
+          marche+=zn.dn[dn];
+          const dpre=cuPrec[l.id]?.zones?.[zn.zid]?.dn?.[dn];
+          const dcur=cuCur[l.id]?.zones?.[zn.zid]?.dn?.[dn];
+          if(dpre)rPrec+=dpre.r;
+          if(dcur)rCur+=dcur.r;
+        }
+      });
+      const rMois=Math.max(0,rCur-rPrec);
+      
+      totPrec+=rPrec;totMois+=rMois;totCum+=rCur;totMarche+=marche;
+      
+      h+=`<tr>
+        <td>Conduite PEHD DN ${dn} PN 10</td>
+        <td class="nr">${fmt(marche)}</td>
+        <td class="nr" style="background:#f4f9ff;font-weight:500">${rPrec>0?fmt(rPrec):'—'}</td>
+        <td class="nr" style="background:#fffcf4;font-weight:500;color:#b45309">${rMois>0?fmt(rMois):'—'}</td>
+        <td class="nr" style="background:#f0faf4;font-weight:600">${rCur>0?fmt(rCur):'—'}</td>
+      </tr>`;
+    });
+    
+    // Total line
+    h+=`<tr style="font-weight:700;border-top:2px solid #dce1e9;background:#f0f4f8">
+      <td>TOTAL ${l.nm.toUpperCase()}</td>
+      <td class="nr">${fmt(totMarche)}</td>
+      <td class="nr" style="background:#e8f0fa">${fmt(totPrec)}</td>
+      <td class="nr" style="background:#fff0d4;color:#b45309">${fmt(totMois)}</td>
+      <td class="nr" style="background:#dff5e8;font-weight:700">${fmt(totCum)}</td>
+    </tr>`;
+    
+    // ── Ligne essais de pression (tout DN confondu) ──
+    let essPrec=0,essCur=0;
+    l.zones.forEach(zn=>{Object.keys(zn.dn).forEach(dn=>{
+      const dpre=cuPrec[l.id]?.zones?.[zn.zid]?.dn?.[dn];
+      const dcur=cuCur[l.id]?.zones?.[zn.zid]?.dn?.[dn];
+      if(dpre)essPrec+=(dpre.ess||0);
+      if(dcur)essCur+=(dcur.ess||0);
+    });});
+    const essMois=Math.max(0,essCur-essPrec);
+    h+=`<tr style="background:#f9fafc;border-top:1px solid #dce1e9">
+      <td style="font-style:italic;color:#5a6778">Essais de pression et d'étanchéité (tout DN)</td>
+      <td class="nr" style="color:#5a6778">${fmt(l.tot)}</td>
+      <td class="nr" style="background:#f4f9ff">${essPrec>0?fmt(essPrec):'—'}</td>
+      <td class="nr" style="background:#fffcf4;color:#b45309">${essMois>0?fmt(essMois):'—'}</td>
+      <td class="nr" style="background:#f0faf4;font-weight:600">${essCur>0?fmt(essCur):'—'}</td>
+    </tr>`;
+    
+    h+=`</tbody></table></div></div>`;
+  });
+
+  // Récap global
+  h+=`<div class="cd" style="margin-top:16px;border-top:4px solid #0f1b2d">
+    <div style="font-size:14px;font-weight:700;margin-bottom:10px">Récapitulatif global</div>
+    <div style="overflow-x:auto"><table class="tb">
+      <thead><tr><th>Lot</th><th>Localité</th><th class="nr">Marché</th><th class="nr" style="background:#e8f4fd">Précédent</th><th class="nr" style="background:#fff4e5">Mois</th><th class="nr" style="background:#e0f7e9">Cumul</th><th class="nr">%</th></tr></thead><tbody>`;
+  
+  let gPrec=0,gMois=0,gCum=0,gMarche=0;
+  LOC.forEach((l,idx)=>{
+    let rPrec=0,rCur=0;
+    l.zones.forEach(zn=>{Object.keys(zn.dn).forEach(dn=>{
+      const dpre=cuPrec[l.id]?.zones?.[zn.zid]?.dn?.[dn];
+      const dcur=cuCur[l.id]?.zones?.[zn.zid]?.dn?.[dn];
+      if(dpre)rPrec+=dpre.r;if(dcur)rCur+=dcur.r;
+    });});
+    const rMois=Math.max(0,rCur-rPrec);
+    const pct=l.tot>0?((rCur/l.tot)*100).toFixed(1):'0.0';
+    gPrec+=rPrec;gMois+=rMois;gCum+=rCur;gMarche+=l.tot;
+    h+=`<tr><td style="font-weight:600">Lot ${idx+1}</td><td>${l.nm}</td>
+      <td class="nr">${fmt(l.tot)}</td>
+      <td class="nr">${fmt(rPrec)}</td>
+      <td class="nr" style="color:#b45309;font-weight:500">${rMois>0?fmt(rMois):'—'}</td>
+      <td class="nr" style="font-weight:600">${fmt(rCur)}</td>
+      <td class="nr"><span class="kb ${+pct>=70?'bg':+pct>=30?'bo':'br'}">${pct}%</span></td></tr>`;
+  });
+  h+=`<tr style="font-weight:700;border-top:2px solid #dce1e9;background:#f0f4f8">
+    <td colspan="2">TOTAL GÉNÉRAL</td>
+    <td class="nr">${fmt(gMarche)}</td>
+    <td class="nr">${fmt(gPrec)}</td>
+    <td class="nr" style="color:#b45309">${fmt(gMois)}</td>
+    <td class="nr" style="font-weight:700">${fmt(gCum)}</td>
+    <td class="nr"><span class="kb ${(gCum/gMarche*100)>=70?'bg':'bo'}">${(gCum/gMarche*100).toFixed(1)}%</span></td></tr>`;
+  h+=`</tbody></table></div></div>`;
+  
+  h+=`</div>`;
+  return h;
+}
+
+// Copy attach data for a lot (Précédent / Mois / Cumul per DN)
+function copyAttachLot(lid,ym){
+  const[yy,mm]=ym.split('-').map(Number);
+  const finMois=`${ym}-${String(lastDayOfMonth(ym)).padStart(2,'0')}`;
+  const prevDate=new Date(yy,mm-1,0);
+  const finPrec=prevDate.toISOString().slice(0,10);
+  const cuPrec=cumul(finPrec);
+  const cuCur=cumul(finMois);
+  const l=LOC.find(x=>x.id===lid);if(!l)return;
+  
+  const dnSet=new Set();
+  l.zones.forEach(zn=>Object.keys(zn.dn).forEach(d=>dnSet.add(d)));
+  const dns=[...dnSet].sort((a,b)=>+b-+a);
+  
+  let txt='';
+  dns.forEach(dn=>{
+    let rPrec=0,rCur=0;
+    l.zones.forEach(zn=>{
+      if(zn.dn[dn]){
+        const dpre=cuPrec[l.id]?.zones?.[zn.zid]?.dn?.[dn];
+        const dcur=cuCur[l.id]?.zones?.[zn.zid]?.dn?.[dn];
+        if(dpre)rPrec+=dpre.r;if(dcur)rCur+=dcur.r;
+      }
+    });
+    const rMois=Math.max(0,rCur-rPrec);
+    txt+=`${Math.round(rPrec)}\t${Math.round(rMois)}\t${Math.round(rCur)}\n`;
+  });
+  // Ligne essais de pression
+  let essPrec=0,essCur=0;
+  l.zones.forEach(zn=>{Object.keys(zn.dn).forEach(dn=>{
+    const dpre=cuPrec[l.id]?.zones?.[zn.zid]?.dn?.[dn];
+    const dcur=cuCur[l.id]?.zones?.[zn.zid]?.dn?.[dn];
+    if(dpre)essPrec+=(dpre.ess||0);
+    if(dcur)essCur+=(dcur.ess||0);
+  });});
+  const essMois=Math.max(0,essCur-essPrec);
+  txt+=`${Math.round(essPrec)}\t${Math.round(essMois)}\t${Math.round(essCur)}\n`;
+  navigator.clipboard.writeText(txt).then(()=>toast('📋 '+l.nm+' copié (DN + Essais)'));
+}
+window.copyAttachLot=copyAttachLot;
+
+// ── HISTORIQUE ──
+function pgHist(){const ds=dbDates().sort().reverse();
+  let h=`<div class="mn"><div class="st">Historique (${ds.length})</div>`;
+  if(!ds.length)return h+`<div class="cd" style="text-align:center;padding:40px"><button class="bp" onclick="go('saisie')">✏️ Créer</button></div></div>`;
+  h+=`<div class="cd"><table class="tb"><thead><tr><th>Date</th><th class="nr">Soudure</th><th class="nr">Fouille</th><th class="nr">Remblai</th><th>Cohérence</th><th>Actions</th></tr></thead><tbody>`;
+  ds.forEach(d=>{const rp=db[d];let sJ=0,fJ=0,rJ=0;LOC.forEach(l=>{const dt=dayTot(rp,l.id);sJ+=dt.s;fJ+=dt.f;rJ+=dt.r;});
+    const cuD=cumul(d);const alD=checkCoherence(cuD);const nA=alD.filter(a=>a.level==='loc').length;const nDN=alD.filter(a=>a.level==='dn').length;
+    const badge=alD.length===0?'<span class="kb bg">✓ OK</span>':`<span class="kb br">⚠️ ${nA?nA+' loc':''}${nA&&nDN?' + ':''}${nDN?nDN+' DN':''}</span>`;
+    h+=`<tr><td style="font-weight:600">${fD(d)}</td><td class="nr">${zv(sJ)}</td><td class="nr">${zv(fJ)}</td><td class="nr">${zv(rJ)}</td><td>${badge}</td><td style="white-space:nowrap"><button class="bsm" onclick="SD='${d}';go('rapport')">📊</button> <button class="bsm" onclick="SD='${d}';go('saisie')">✏️</button> <button class="bsm bd" onclick="del('${d}')">🗑️</button></td></tr>`;});
+  h+=`</tbody></table></div></div>`;return h;}
+
+async function del(d){if(!confirm('Supprimer ?'))return;await syncDel(d);toast('🗑️ Supprimé');draw();}
+function go(v){V=v;draw();window.scrollTo(0,0);}
+function toast(m){const t=document.createElement('div');t.className='tt';t.textContent=m;document.body.appendChild(t);setTimeout(()=>t.classList.add('ts'),10);setTimeout(()=>{t.classList.remove('ts');setTimeout(()=>t.remove(),300);},3000);}
+window.go=go;window.save=save;window.saveGo=saveGo;window.del=del;
+init();
+</script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}html{scroll-behavior:smooth}
+body{font-family:'DM Sans',system-ui,sans-serif;background:#f8f9fb;color:#2d3748;line-height:1.6;min-height:100vh}
+.hd{background:linear-gradient(135deg,#0f1b2d,#243b5c);color:#fff;position:sticky;top:0;z-index:100;box-shadow:0 8px 32px rgba(15,27,45,.12)}
+.hi{max-width:1340px;margin:0 auto;padding:12px 28px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.hb{display:flex;align-items:center;gap:14px}.hlogo{width:40px;height:40px;background:#2c7be5;border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:18px}
+.htit{font-size:15px;font-weight:600}.hsub{font-size:12px;color:rgba(255,255,255,.55)}
+.nv{display:flex;gap:4px;flex-wrap:wrap}.nb{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.7);padding:6px 14px;border-radius:20px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:500;cursor:pointer;transition:.25s}.nb:hover{background:rgba(255,255,255,.15);color:#fff}.nb.ac{background:#2c7be5;color:#fff;border-color:#2c7be5}
+.sync-status{display:flex;align-items:center;gap:6px;font-size:11px;color:rgba(255,255,255,.7);background:rgba(255,255,255,.06);padding:4px 12px;border-radius:14px}
+.sync-dot{width:8px;height:8px;border-radius:50%;display:inline-block}.sd-green{background:#36b37e}.sd-red{background:#e74c3c}
+.sync-btn{background:none;border:none;cursor:pointer;font-size:14px;padding:2px 4px;border-radius:4px}.sync-bar{background:#f5a623;color:#fff;text-align:center;padding:6px;font-size:12px;font-weight:500}
+.mn{max-width:1340px;margin:0 auto;padding:24px 28px 60px}
+.st{display:flex;align-items:center;gap:10px;margin:28px 0 14px;font-size:14px;font-weight:600;color:#5a6778;text-transform:uppercase;letter-spacing:.8px}.st::before{content:'';width:4px;height:18px;border-radius:2px;background:#2c7be5}
+.kr{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:16px}
+.kc{background:#fff;border-radius:12px;padding:14px 16px;box-shadow:0 1px 3px rgba(15,27,45,.06);border:1px solid #eef1f6;transition:.25s}.kc:hover{box-shadow:0 4px 16px rgba(15,27,45,.08);transform:translateY(-1px)}
+.kl{font-size:10px;color:#8a95a5;text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px}.kv{font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;color:#0f1b2d}.ku{font-size:11px;font-weight:400;color:#8a95a5;margin-left:3px}.ksb{font-size:10px;color:#8a95a5;margin-top:2px}
+.kb{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;margin-top:3px}.bg{background:#e3fcef;color:#36b37e}.bo{background:#fff4e5;color:#f5a623}.br{background:#ffeaea;color:#e74c3c}.bbl{background:#e8f4fd;color:#2c7be5}
+.cd{background:#fff;border-radius:12px;padding:18px 20px;box-shadow:0 1px 3px rgba(15,27,45,.06);border:1px solid #eef1f6;margin-bottom:12px}
+.ct{font-size:13px;font-weight:600;color:#0f1b2d;margin-bottom:10px;display:flex;align-items:center;gap:8px}.dt{width:8px;height:8px;border-radius:50%;display:inline-block}
+.tb{width:100%;border-collapse:collapse;font-size:13px}.tb thead th{text-align:left;padding:7px 10px;font-weight:600;font-size:10px;color:#8a95a5;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid #eef1f6;white-space:nowrap}
+.tb tbody td{padding:7px 10px;border-bottom:1px solid #eef1f6;font-family:'JetBrains Mono',monospace;font-size:12px}.tb tbody td:first-child{font-family:'DM Sans',sans-serif;font-weight:500;font-size:12px}.tb tbody tr:hover{background:#f8f9fb}
+.nr{text-align:right}.zz{color:#b8c2cc}
+.bw{display:flex;align-items:center;gap:6px}.pbb{flex:1;height:6px;background:#eef1f6;border-radius:4px;overflow:hidden;min-width:50px}.bf{height:100%;border-radius:4px;transition:width .6s ease}.bla{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:500;min-width:40px;text-align:right}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px}
+@media(max-width:900px){.g2,.g3{grid-template-columns:1fr}}
+.pt{display:inline-block;background:#e8f4fd;border:1px solid #2c7be5;border-radius:6px;padding:2px 8px;font-size:10px;font-family:'JetBrains Mono',monospace;color:#2c7be5;margin:1px}
+.eg{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}.ec{background:#f8f9fb;border-radius:8px;padding:8px 10px;border:1px solid #eef1f6}.el{font-size:11px;font-weight:600;color:#0f1b2d;margin-bottom:3px}.er{display:flex;justify-content:space-between;font-size:11px;color:#5a6778;margin-bottom:1px}.ev{font-family:'JetBrains Mono',monospace;font-weight:500;color:#0f1b2d}
+.ch{position:relative;height:240px;margin-top:8px}
+.fr{margin-bottom:10px}.fl{display:block;font-size:11px;font-weight:600;color:#5a6778;margin-bottom:3px}
+.fi{font-family:'DM Sans',sans-serif;font-size:13px;padding:8px 12px;border:1px solid #dce1e9;border-radius:8px;width:100%;background:#fff;color:#2d3748;outline:none;transition:.25s}.fi:focus{border-color:#2c7be5;box-shadow:0 0 0 3px rgba(44,123,229,.1)}textarea.fi{resize:vertical}
+.ci{font-family:'JetBrains Mono',monospace;font-size:12px;padding:5px 7px;border:1px solid #eef1f6;border-radius:6px;width:80px;text-align:right;background:#f8f9fb;color:#2d3748;outline:none;transition:.2s}.ci:focus{border-color:#2c7be5;background:#fff;box-shadow:0 0 0 2px rgba(44,123,229,.1)}.ci.ti{text-align:left;min-width:150px}
+.bp{font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:10px 20px;background:#2c7be5;color:#fff;border:none;border-radius:8px;cursor:pointer;transition:.25s}.bp:hover{background:#1a6ad4}
+.bs{font-family:'DM Sans',sans-serif;font-size:13px;font-weight:500;padding:10px 20px;background:#fff;color:#5a6778;border:1px solid #dce1e9;border-radius:8px;cursor:pointer;transition:.25s}.bs:hover{background:#f8f9fb}
+.bsm{font-size:12px;padding:4px 8px;background:#fff;border:1px solid #eef1f6;border-radius:6px;cursor:pointer}.bsm:hover{background:#f8f9fb}.bsm.bd:hover{background:#ffeaea;border-color:#e74c3c}
+.ha{display:flex;gap:12px;flex-wrap:wrap;margin-top:20px}
+.tt{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(20px);background:#0f1b2d;color:#fff;padding:12px 24px;border-radius:10px;font-size:13px;font-family:'DM Sans',sans-serif;box-shadow:0 8px 32px rgba(15,27,45,.2);opacity:0;transition:.3s;z-index:1000;white-space:nowrap}.tt.ts{opacity:1;transform:translateX(-50%) translateY(0)}
+.lb{background:#f8f9fb;border:1px solid #eef1f6;border-radius:10px;padding:12px 14px;margin-bottom:10px}
+.lh{display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap}.ln{font-size:13px;font-weight:700;color:#0f1b2d}.lt{font-family:'JetBrains Mono',monospace;font-size:11px;color:#8a95a5;background:#fff;padding:2px 8px;border-radius:6px;border:1px solid #eef1f6}.ltuy{display:flex;align-items:center;gap:6px}
+.zn-label{display:flex;align-items:center;gap:8px;margin:10px 0 5px;padding-top:6px;border-top:1px dashed #dce1e9}
+.zn-tag{background:#0f1b2d;color:#fff;padding:2px 10px;border-radius:6px;font-size:10px;font-weight:600;font-family:'JetBrains Mono',monospace}.zn-tot{font-family:'JetBrains Mono',monospace;font-size:10px;color:#8a95a5}
+.dnt{background:#fff;border-radius:8px;overflow:hidden}.dnt thead th{font-size:10px;padding:5px 8px}.dnt tbody td{padding:5px 8px;border-bottom:1px solid #f8f9fb}
+.dntg{display:inline-block;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:600;font-family:'JetBrains Mono',monospace}
+.pr{display:flex;align-items:center;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid #eef1f6}
+/* Alerts */
+.alert-box{background:#fff5f5;border:1px solid #e74c3c;border-left:4px solid #e74c3c;border-radius:8px;margin-bottom:14px;overflow:hidden}
+.alert-header{background:#e74c3c;color:#fff;padding:8px 14px;font-size:13px;font-weight:600}
+.alert-body{padding:10px 14px;font-size:12px;color:#5a3030;line-height:1.7}
+.alert-section{font-weight:600;margin-top:6px;margin-bottom:3px;color:#c0392b}
+.alert-item{padding:2px 0;font-family:'JetBrains Mono',monospace;font-size:11px}
+/* WhatsApp */
+.wa-txt{background:#0b141a;color:#e9edef;padding:16px;border-radius:10px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.7;white-space:pre-wrap;word-wrap:break-word;max-height:500px;overflow-y:auto}
+.no-print{}
+
+/* Animation drill-down localité */
+@keyframes slideDown {
+  from {opacity:0;transform:translateY(-8px);max-height:0}
+  to {opacity:1;transform:translateY(0);max-height:2000px}
+}
+
+/* Print */
+@media print{
+  body{background:#fff!important;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}
+  .hd,.nv,.sync-status,.sync-bar,.ha,.no-print,.sync-btn{display:none!important}
+  .mn{padding:0!important;max-width:none!important}
+  .cd{break-inside:avoid;box-shadow:none;border:1px solid #ddd}
+  .bp,.bs,.bsm{display:none!important}
+  body.print-dg .st:not(:first-of-type){break-inside:avoid}
+  @page{margin:10mm}
+}
+
+@media(max-width:600px){
+  .hi{padding:8px 12px;gap:8px}.hlogo{width:32px;height:32px;font-size:14px}.htit{font-size:13px}.hsub{display:none}
+  .nv{position:fixed;bottom:0;left:0;right:0;background:#0f1b2d;padding:6px 8px;gap:4px;justify-content:space-around;z-index:200;box-shadow:0 -4px 20px rgba(0,0,0,.15);flex-wrap:nowrap}
+  .nb{padding:8px 0;font-size:10px;border:none;background:transparent;border-radius:8px;flex:1;text-align:center}.nb.ac{background:rgba(44,123,229,.2)}
+  .mn{padding:12px 12px 80px}.kr{grid-template-columns:1fr 1fr;gap:8px}.kv{font-size:18px}
+  .cd{padding:14px 12px;border-radius:10px}
+  .ci{width:100%;font-size:14px;padding:10px 12px;min-height:44px}.ci.ti{text-align:left;width:100%}
+  .fi{font-size:14px;padding:10px 14px;min-height:44px}
+  .dnt thead{display:none}.dnt tbody tr{display:flex;flex-wrap:wrap;gap:6px;padding:10px 0;border-bottom:1px solid #eef1f6;align-items:center}
+  .dnt tbody td{border:none;padding:0}.dnt tbody td:nth-child(1){width:60px}.dnt tbody td:nth-child(2){flex:1}
+  .dnt tbody td:nth-child(3),.dnt tbody td:nth-child(4),.dnt tbody td:nth-child(5){width:calc(33.3% - 4px)}
+  .dnt tbody td:nth-child(3)::before{content:'S: ';font-family:'DM Sans';font-size:9px;color:#8a95a5}
+  .dnt tbody td:nth-child(4)::before{content:'F: ';font-family:'DM Sans';font-size:9px;color:#8a95a5}
+  .dnt tbody td:nth-child(5)::before{content:'R: ';font-family:'DM Sans';font-size:9px;color:#8a95a5}
+  .lb{padding:10px}.lh{flex-direction:column;align-items:flex-start;gap:6px}.ltuy{width:100%;justify-content:space-between}
+  .pr{flex-direction:column;align-items:stretch}
+  .bp,.bs{padding:14px 20px;font-size:14px;width:100%;min-height:48px}.bsm{padding:8px 12px;font-size:14px;min-height:40px}
+  .g2,.g3{grid-template-columns:1fr}.ha{flex-direction:column}.tt{bottom:70px}
+  .wa-txt{font-size:10px;padding:12px}
+}
+</style>
+</body>
+</html>
