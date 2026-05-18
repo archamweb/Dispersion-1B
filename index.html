@@ -751,6 +751,7 @@ function pgRapport(){const rp=db[SD];let cu=cumul(SD);
     <div class="st" style="margin:0">Rapport du ${fD(SD)}</div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <select class="fi" style="max-width:220px;margin:0" onchange="SD=this.value;draw()">${dbDates().sort().reverse().map(d=>`<option value="${d}" ${d===SD?'selected':''}>${fD(d)}</option>`).join('')}</select>
+      <button class="bs" onclick="exportRapportPDF()" title="Exporter le rapport en PDF">📄 PDF</button>
       <button class="bs" onclick="V='saisie';draw()">✏️</button></div></div>
     <div class="kr">
       <div class="kc" style="border-left:4px solid #2c7be5"><div class="kl">Avancement pondéré</div><div class="kv">${avPond.toFixed(1)}<span class="ku">%</span></div><div class="ksb">Toutes activités</div></div>
@@ -1653,6 +1654,17 @@ function exportDGpdf(){
 }
 window.exportDGpdf=exportDGpdf;
 
+// D1bis: Export PDF du Rapport journalier
+function exportRapportPDF(){
+  if(V!=='rapport'){toast('⚠️ Aller d\'abord sur le Rapport journalier');return;}
+  document.body.classList.add('print-rapport');
+  setTimeout(()=>{
+    window.print();
+    setTimeout(()=>document.body.classList.remove('print-rapport'),500);
+  },200);
+}
+window.exportRapportPDF=exportRapportPDF;
+
 // D2: Export Excel cumul détaillé format attachement quantitatif
 function exportExcelCumul(){
   let cu=cumul('9999-12-31');
@@ -2163,6 +2175,13 @@ body{font-family:'DM Sans',system-ui,sans-serif;background:#f8f9fb;color:#2d3748
   .cd{break-inside:avoid;box-shadow:none;border:1px solid #ddd}
   .bp,.bs,.bsm{display:none!important}
   body.print-dg .st:not(:first-of-type){break-inside:avoid}
+  body.print-rapport .st{break-inside:avoid;page-break-after:avoid}
+  body.print-rapport .cd{margin-bottom:6px!important;padding:8px 10px!important}
+  body.print-rapport .kc{padding:6px 10px!important}
+  body.print-rapport .kv{font-size:14px!important}
+  body.print-rapport .tb{font-size:9px!important}
+  body.print-rapport .tb th,body.print-rapport .tb td{padding:3px 5px!important}
+  body.print-rapport select,body.print-rapport input[type=checkbox]{display:none!important}
   @page{margin:10mm}
 }
 
