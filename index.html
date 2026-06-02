@@ -1954,6 +1954,7 @@ function pgAttachement(){
           <th class="nr" style="background:#e8f4fd">Précédent</th>
           <th class="nr" style="background:#fff4e5">Mois</th>
           <th class="nr" style="background:#e0f7e9">Cumul</th>
+          <th class="nr">% Avt</th>
         </tr></thead><tbody>`;
     
     let totPrec=0,totMois=0,totCum=0,totMarche=0;
@@ -1980,6 +1981,7 @@ function pgAttachement(){
         <td class="nr" style="background:#f4f9ff;font-weight:500">${rPrec>0?fmt(rPrec):'—'}</td>
         <td class="nr" style="background:#fffcf4;font-weight:500;color:#b45309">${rMois>0?fmt(rMois):'—'}</td>
         <td class="nr" style="background:#f0faf4;font-weight:600">${rCur>0?fmt(rCur):'—'}</td>
+        <td class="nr">${marche>0?'<span class="kb '+bC(pc(rCur,marche))+'">'+pcS(rCur,marche)+'</span>':'—'}</td>
       </tr>`;
     });
     
@@ -1990,6 +1992,7 @@ function pgAttachement(){
       <td class="nr" style="background:#e8f0fa">${fmt(totPrec)}</td>
       <td class="nr" style="background:#fff0d4;color:#b45309">${fmt(totMois)}</td>
       <td class="nr" style="background:#dff5e8;font-weight:700">${fmt(totCum)}</td>
+      <td class="nr">${totMarche>0?'<span class="kb '+bC(pc(totCum,totMarche))+'">'+pcS(totCum,totMarche)+'</span>':'—'}</td>
     </tr>`;
     
     // ── Ligne essais de pression (tout DN confondu) ──
@@ -2007,6 +2010,7 @@ function pgAttachement(){
       <td class="nr" style="background:#f4f9ff">${essPrec>0?fmt(essPrec):'—'}</td>
       <td class="nr" style="background:#fffcf4;color:#b45309">${essMois>0?fmt(essMois):'—'}</td>
       <td class="nr" style="background:#f0faf4;font-weight:600">${essCur>0?fmt(essCur):'—'}</td>
+      <td class="nr">${l.tot>0&&essCur>0?'<span class="kb '+bC(pc(essCur,l.tot))+'">'+pcS(essCur,l.tot)+'</span>':'—'}</td>
     </tr>`;
     
     h+=`</tbody></table></div></div>`;
