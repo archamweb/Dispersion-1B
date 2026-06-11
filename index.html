@@ -16,10 +16,11 @@
 const API_URL = 'https://script.google.com/macros/s/AKfycbww9tyRkGhOqP3cvmomr6wM_TEqy0YoX2wGqrIL_cFZ8g-rv0hF98gsJZN1g00z0gdU/exec';
 
 const LOC=[
+  // Modif 06/2026 validée JCK : 531 ml DN63 redéployés de Z4 (bas-fond impraticable) vers Z1
   {id:'oume',nm:'Oumé',z:'Ouest',tot:24482,regards:5,zones:[
-    {zid:'Z1',nm:'Zone 1',dn:{160:1890,110:1120,90:1340,63:5378},tot:9728},
+    {zid:'Z1',nm:'Zone 1',dn:{160:1890,110:1120,90:1340,63:5909},tot:10259},
     {zid:'Z3',nm:'Zone 3',dn:{160:615,90:805,63:2790},tot:4210},
-    {zid:'Z4',nm:'Zone 4',dn:{110:734,90:866,63:3225},tot:4825},
+    {zid:'Z4',nm:'Zone 4',dn:{110:734,90:866,63:2694},tot:4294},
     {zid:'Z5',nm:'Zone 5',dn:{110:1037,90:910,63:3772},tot:5719},
   ]},
   {id:'hire',nm:'Hiré',z:'Ouest',tot:12791,regards:0,zones:[
@@ -29,10 +30,13 @@ const LOC=[
     {zid:'Z4',nm:'Zone 4',dn:{90:625,63:2220},tot:2845},
     {zid:'Z5',nm:'Zone 5',dn:{110:155,90:275,63:1400},tot:1830},
   ]},
-  {id:'diegonefla',nm:'Diégonéfla',z:'Ouest',tot:10269,regards:2,zones:[{zid:'_',nm:'',dn:{110:643,90:1468,63:8158},tot:10269}]},
-  {id:'goueda',nm:'Gouéda',z:'Ouest',tot:4370,regards:2,zones:[{zid:'_',nm:'',dn:{110:707,90:925,63:2738},tot:4370}]},
+  // Modif 06/2026 : pose terminée → contractuel calé sur le remblai réel (ex: 10269)
+  {id:'diegonefla',nm:'Diégonéfla',z:'Ouest',tot:10202,regards:2,zones:[{zid:'_',nm:'',dn:{110:645,90:1418,63:8139},tot:10202}]},
+  // Modif 06/2026 : pose terminée → contractuel calé sur le remblai réel (ex: 4370)
+  {id:'goueda',nm:'Gouéda',z:'Ouest',tot:4406,regards:2,zones:[{zid:'_',nm:'',dn:{110:689,90:944,63:2773},tot:4406}]},
   {id:'doukouya',nm:'Doukouya',z:'Ouest',tot:935,regards:0,zones:[{zid:'_',nm:'',dn:{63:935},tot:935}]},
-  {id:'toumodi',nm:'Toumodi',z:'Est',tot:18946,regards:2,zones:[{zid:'_',nm:'',dn:{110:1675,90:3935,63:13336},tot:18946}]},
+  // Modif 06/2026 : 1 regard supprimé du périmètre (ex: 2)
+  {id:'toumodi',nm:'Toumodi',z:'Est',tot:18946,regards:1,zones:[{zid:'_',nm:'',dn:{110:1675,90:3935,63:13336},tot:18946}]},
   {id:'kokoumbo',nm:'Kokoumbo',z:'Est',tot:6993,regards:2,zones:[{zid:'_',nm:'',dn:{160:985,90:450,63:5558},tot:6993}]},
   {id:'zahakro',nm:'Zahakro',z:'Est',tot:6362,regards:1,zones:[{zid:'_',nm:'',dn:{90:552,63:5810},tot:6362}]},
   {id:'angoda',nm:'Angoda',z:'Est',tot:6956,regards:0,zones:[{zid:'_',nm:'',dn:{63:6956},tot:6956}]},
@@ -287,8 +291,9 @@ const ETAT_INITIAL={
     Z4:{90:{bar:649},63:{bar:2242}},
     Z5:{110:{bar:177},90:{bar:283.2},63:{bar:1416}},
   }},
-  diegonefla:{zones:{_:{110:{bar:708},90:{bar:1534},63:{bar:8201}}}},
-  goueda:{zones:{_:{110:{bar:708},90:{bar:944},63:{bar:2773}}}},
+  // Modif 06/2026 : bardage calé sur le remblai réel (pose terminée, surplus retourné au stock)
+  diegonefla:{zones:{_:{110:{bar:645},90:{bar:1418},63:{bar:8139}}}},
+  goueda:{zones:{_:{110:{bar:689},90:{bar:944},63:{bar:2773}}}},
   doukouya:{zones:{_:{63:{bar:0}}}}, // Bardage commencé au 23/03/2026
   toumodi:{zones:{_:{110:{bar:1711},90:{bar:4012},63:{bar:13334}}}},
   kokoumbo:{zones:{_:{160:{bar:0},90:{bar:0},63:{bar:4130}}}}, // DN160: bardé le 24/04 ; DN90: bardé au 23/03/2026 ; DN63: partiel
