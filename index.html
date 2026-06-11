@@ -23,11 +23,12 @@ const LOC=[
     {zid:'Z4',nm:'Zone 4',dn:{110:734,90:866,63:2694},tot:4294},
     {zid:'Z5',nm:'Zone 5',dn:{110:1037,90:910,63:3772},tot:5719},
   ]},
-  {id:'hire',nm:'Hiré',z:'Ouest',tot:12791,regards:0,zones:[
-    {zid:'Z1',nm:'Zone 1',dn:{90:269,63:1124},tot:1393},
-    {zid:'Z2',nm:'Zone 2',dn:{110:295,90:305,63:1938},tot:2538},
+  // Modif 06/2026 : Z1, Z2, Z4 terminées → contractuels calés sur la soudure réelle (ex: tot 12791)
+  {id:'hire',nm:'Hiré',z:'Ouest',tot:12860,regards:0,zones:[
+    {zid:'Z1',nm:'Zone 1',dn:{90:272.7,63:1121.3},tot:1394},
+    {zid:'Z2',nm:'Zone 2',dn:{110:295,90:306,63:1947},tot:2548},
     {zid:'Z3',nm:'Zone 3',dn:{110:775,90:1105,63:2305},tot:4185},
-    {zid:'Z4',nm:'Zone 4',dn:{90:625,63:2220},tot:2845},
+    {zid:'Z4',nm:'Zone 4',dn:{90:625.5,63:2277.5},tot:2903},
     {zid:'Z5',nm:'Zone 5',dn:{110:155,90:275,63:1400},tot:1830},
   ]},
   // Modif 06/2026 : pose terminée → contractuel calé sur le remblai réel (ex: 10269)
@@ -284,11 +285,12 @@ const ETAT_INITIAL={
     Z4:{110:{bar:767},90:{bar:885},63:{bar:3245}},
     Z5:{110:{bar:1062},90:{bar:944},63:{bar:3799.6}},
   }},
+  // Modif 06/2026 : bardage Z1/Z2/Z4 calé sur le linéaire réellement posé (zones terminées)
   hire:{zones:{
-    Z1:{90:{bar:295},63:{bar:1156.4}},
-    Z2:{110:{bar:342},90:{bar:306},63:{bar:1947}},
+    Z1:{90:{bar:272.7},63:{bar:1121.3}},
+    Z2:{110:{bar:295},90:{bar:306},63:{bar:1947}},
     Z3:{110:{bar:861.4},90:{bar:1144.6},63:{bar:2430.8}},
-    Z4:{90:{bar:649},63:{bar:2242}},
+    Z4:{90:{bar:625.5},63:{bar:2277.5}},
     Z5:{110:{bar:177},90:{bar:283.2},63:{bar:1416}},
   }},
   // Modif 06/2026 : bardage calé sur le linéaire réellement posé (pose terminée)
