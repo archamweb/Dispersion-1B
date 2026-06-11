@@ -32,8 +32,8 @@ const LOC=[
   ]},
   // Modif 06/2026 : pose terminée → contractuel calé sur le remblai réel (ex: 10269)
   {id:'diegonefla',nm:'Diégonéfla',z:'Ouest',tot:10202,regards:2,zones:[{zid:'_',nm:'',dn:{110:645,90:1418,63:8139},tot:10202}]},
-  // Modif 06/2026 : pose terminée → contractuel calé sur le remblai réel (ex: 4370)
-  {id:'goueda',nm:'Gouéda',z:'Ouest',tot:4406,regards:2,zones:[{zid:'_',nm:'',dn:{110:689,90:944,63:2773},tot:4406}]},
+  // Modif 06/2026 : pose terminée → contractuel calé sur la soudure réelle = linéaire posé (ex: 4370)
+  {id:'goueda',nm:'Gouéda',z:'Ouest',tot:4425.1,regards:2,zones:[{zid:'_',nm:'',dn:{110:708,90:944,63:2773.1},tot:4425.1}]},
   {id:'doukouya',nm:'Doukouya',z:'Ouest',tot:935,regards:0,zones:[{zid:'_',nm:'',dn:{63:935},tot:935}]},
   // Modif 06/2026 : 1 regard supprimé du périmètre (ex: 2)
   {id:'toumodi',nm:'Toumodi',z:'Est',tot:18946,regards:1,zones:[{zid:'_',nm:'',dn:{110:1675,90:3935,63:13336},tot:18946}]},
@@ -291,9 +291,9 @@ const ETAT_INITIAL={
     Z4:{90:{bar:649},63:{bar:2242}},
     Z5:{110:{bar:177},90:{bar:283.2},63:{bar:1416}},
   }},
-  // Modif 06/2026 : bardage calé sur le remblai réel (pose terminée, surplus retourné au stock)
+  // Modif 06/2026 : bardage calé sur le linéaire réellement posé (pose terminée)
   diegonefla:{zones:{_:{110:{bar:645},90:{bar:1418},63:{bar:8139}}}},
-  goueda:{zones:{_:{110:{bar:689},90:{bar:944},63:{bar:2773}}}},
+  goueda:{zones:{_:{110:{bar:708},90:{bar:944},63:{bar:2773.1}}}},
   doukouya:{zones:{_:{63:{bar:0}}}}, // Bardage commencé au 23/03/2026
   toumodi:{zones:{_:{110:{bar:1711},90:{bar:4012},63:{bar:13334}}}},
   kokoumbo:{zones:{_:{160:{bar:0},90:{bar:0},63:{bar:4130}}}}, // DN160: bardé le 24/04 ; DN90: bardé au 23/03/2026 ; DN63: partiel
@@ -1846,7 +1846,7 @@ function exportComplet(){
       moe:'John Cockerill',
       genere_le:new Date().toISOString(),
       genere_par:'Avancement Dispersion 1B (web app)',
-      version_app:'2026-04',
+      version_app:'6.0 — 2026-06',
       nb_rapports:ds.length,
       premiere_date:ds[0]||null,
       derniere_date:ds[ds.length-1]||null,
