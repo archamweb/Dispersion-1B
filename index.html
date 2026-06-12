@@ -23,22 +23,20 @@ const LOC=[
     {zid:'Z4',nm:'Zone 4',dn:{110:734,90:866,63:2694},tot:4294},
     {zid:'Z5',nm:'Zone 5',dn:{110:1037,90:910,63:3772},tot:5719},
   ]},
-  // Modif 06/2026 : Z1, Z2, Z3, Z4 terminées → contractuels calés sur la soudure réelle (ex: tot 12791)
-  {id:'hire',nm:'Hiré',z:'Ouest',tot:12910.6,regards:0,zones:[
-    {zid:'Z1',nm:'Zone 1',dn:{90:272.7,63:1121.3},tot:1394},
-    {zid:'Z2',nm:'Zone 2',dn:{110:295,90:306,63:1947},tot:2548},
-    {zid:'Z3',nm:'Zone 3',dn:{110:801.8,90:1085.6,63:2348.2},tot:4235.6},
-    {zid:'Z4',nm:'Zone 4',dn:{90:625.5,63:2277.5},tot:2903},
+  {id:'hire',nm:'Hiré',z:'Ouest',tot:12791,regards:0,zones:[
+    {zid:'Z1',nm:'Zone 1',dn:{90:269,63:1124},tot:1393},
+    {zid:'Z2',nm:'Zone 2',dn:{110:295,90:305,63:1938},tot:2538},
+    {zid:'Z3',nm:'Zone 3',dn:{110:775,90:1105,63:2305},tot:4185},
+    {zid:'Z4',nm:'Zone 4',dn:{90:625,63:2220},tot:2845},
     {zid:'Z5',nm:'Zone 5',dn:{110:155,90:275,63:1400},tot:1830},
   ]},
-  // Modif 06/2026 : pose terminée → contractuel calé sur le remblai réel (ex: 10269)
-  {id:'diegonefla',nm:'Diégonéfla',z:'Ouest',tot:10202,regards:2,zones:[{zid:'_',nm:'',dn:{110:645,90:1418,63:8139},tot:10202}]},
-  // Modif 06/2026 : pose terminée → contractuel calé sur la soudure réelle = linéaire posé (ex: 4370)
-  {id:'goueda',nm:'Gouéda',z:'Ouest',tot:4425.1,regards:2,zones:[{zid:'_',nm:'',dn:{110:708,90:944,63:2773.1},tot:4425.1}]},
+  {id:'diegonefla',nm:'Diégonéfla',z:'Ouest',tot:10269,regards:2,zones:[{zid:'_',nm:'',dn:{110:643,90:1468,63:8158},tot:10269}]},
+  {id:'goueda',nm:'Gouéda',z:'Ouest',tot:4370,regards:2,zones:[{zid:'_',nm:'',dn:{110:707,90:925,63:2738},tot:4370}]},
   {id:'doukouya',nm:'Doukouya',z:'Ouest',tot:935,regards:0,zones:[{zid:'_',nm:'',dn:{63:935},tot:935}]},
-  // Modif 06/2026 : 1 regard supprimé du périmètre (ex: 2)
+  // Modif 06/2026 actée : 1 regard déplacé de Toumodi vers Kokoumbo (total Est inchangé)
   {id:'toumodi',nm:'Toumodi',z:'Est',tot:18946,regards:1,zones:[{zid:'_',nm:'',dn:{110:1675,90:3935,63:13336},tot:18946}]},
-  {id:'kokoumbo',nm:'Kokoumbo',z:'Est',tot:6993,regards:2,zones:[{zid:'_',nm:'',dn:{160:985,90:450,63:5558},tot:6993}]},
+  // Modif 06/2026 actée : +1 regard reçu de Toumodi (dont 1 non réalisable sur site, restera visible)
+  {id:'kokoumbo',nm:'Kokoumbo',z:'Est',tot:6993,regards:3,zones:[{zid:'_',nm:'',dn:{160:985,90:450,63:5558},tot:6993}]},
   {id:'zahakro',nm:'Zahakro',z:'Est',tot:6362,regards:1,zones:[{zid:'_',nm:'',dn:{90:552,63:5810},tot:6362}]},
   {id:'angoda',nm:'Angoda',z:'Est',tot:6956,regards:0,zones:[{zid:'_',nm:'',dn:{63:6956},tot:6956}]},
   {id:'gbonti',nm:'Gbonti',z:'Est',tot:1221,regards:0,zones:[{zid:'_',nm:'',dn:{63:1221},tot:1221}]},
@@ -285,17 +283,15 @@ const ETAT_INITIAL={
     Z4:{110:{bar:767},90:{bar:885},63:{bar:3245}},
     Z5:{110:{bar:1062},90:{bar:944},63:{bar:3799.6}},
   }},
-  // Modif 06/2026 : bardage Z1/Z2/Z3/Z4 calé sur le linéaire réellement posé (zones terminées)
   hire:{zones:{
-    Z1:{90:{bar:272.7},63:{bar:1121.3}},
-    Z2:{110:{bar:295},90:{bar:306},63:{bar:1947}},
-    Z3:{110:{bar:801.8},90:{bar:1085.6},63:{bar:2348.2}},
-    Z4:{90:{bar:625.5},63:{bar:2277.5}},
+    Z1:{90:{bar:295},63:{bar:1156.4}},
+    Z2:{110:{bar:342},90:{bar:306},63:{bar:1947}},
+    Z3:{110:{bar:861.4},90:{bar:1144.6},63:{bar:2430.8}},
+    Z4:{90:{bar:649},63:{bar:2242}},
     Z5:{110:{bar:177},90:{bar:283.2},63:{bar:1416}},
   }},
-  // Modif 06/2026 : bardage calé sur le linéaire réellement posé (pose terminée)
-  diegonefla:{zones:{_:{110:{bar:645},90:{bar:1418},63:{bar:8139}}}},
-  goueda:{zones:{_:{110:{bar:708},90:{bar:944},63:{bar:2773.1}}}},
+  diegonefla:{zones:{_:{110:{bar:708},90:{bar:1534},63:{bar:8201}}}},
+  goueda:{zones:{_:{110:{bar:708},90:{bar:944},63:{bar:2773}}}},
   doukouya:{zones:{_:{63:{bar:0}}}}, // Bardage commencé au 23/03/2026
   toumodi:{zones:{_:{110:{bar:1711},90:{bar:4012},63:{bar:13334}}}},
   kokoumbo:{zones:{_:{160:{bar:0},90:{bar:0},63:{bar:4130}}}}, // DN160: bardé le 24/04 ; DN90: bardé au 23/03/2026 ; DN63: partiel
@@ -1848,7 +1844,7 @@ function exportComplet(){
       moe:'John Cockerill',
       genere_le:new Date().toISOString(),
       genere_par:'Avancement Dispersion 1B (web app)',
-      version_app:'6.0 — 2026-06',
+      version_app:'6.1 — 2026-06',
       nb_rapports:ds.length,
       premiere_date:ds[0]||null,
       derniere_date:ds[ds.length-1]||null,
